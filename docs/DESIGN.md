@@ -77,3 +77,51 @@ Only the first 400 characters of a delegation brief are retained in the
 parent's delegation record. The full brief is sent to the worker. Hidden
 workers are omitted from the sidebar; the delegation result still identifies
 their thread.
+
+A delegation may name a stored execution preset, which is applied under the
+call's own arguments and over the worker execution. A preset is partial by
+design: it only loses the ids the catalog no longer lists, and the provider
+follows whichever model the preset names. The `presets` and `fallback` keys are
+stripped before anything reaches `threads.spawn`, because they are this plugin's
+own bookkeeping rather than spawn fields.
+
+`verify: true` spawns a check unit on the same execution, carrying the original
+brief and the worker's claim, and records its thread on the delegation record.
+A check unit is evidence for the unit it checks: it is excluded from the review
+gate, since judging the checker as well would add ceremony rather than a
+decision.
+
+Two caps bound a fan-out, counted from this plugin's own records so the refusal
+can name which cap it hit. The per-turn count starts at the last dispatch, which
+is where a turn begins. A refusal is a distinct error type: the delegation tool
+retries a provider failure on the fallback, and a cap is not a provider failure.
+
+## The review gate
+
+A verdict is recorded by the tool rather than inferred from the timeline. Reads
+leave no row, so "did the orchestrator look at this" is unobservable from the
+outside; making the verdict an explicit call is what makes it checkable at all.
+
+The gate runs when an orchestrator's turn ends and when a worker settles, and
+only nudges a thread that is idle: a message sent mid-turn would queue behind
+the work it is asking about. It remembers the set of workers it last reminded
+about, so an ignored reminder is not repeated for the same set. A finished turn
+cannot be stopped, so `block` behaves as `guard` here; the nudge text says so
+rather than implying a stop that did not happen.
+
+A worker that settles while nothing is waiting on it is found by looking its
+thread id up in every stored orchestrator's delegations. A delegation made with
+`waitForResult: false` settles that way. That lookup also carries the failure text from
+`thread.failed` onto the record, so the orchestrator is told why a worker failed
+and not only that it did.
+
+## Contract shapes
+
+The contract is emitted, never rewritten. It states which acts the classifier
+flags, so a free-form replacement could desync the two and make the watchdog
+wrong; presets swap sections and project rules append one.
+
+`configure` truncates dynamic instructions at 4096 characters, so the budget is
+an invariant rather than a hope: the budget test builds the largest contract
+every preset can produce with an appended section at the cap, and asserts it
+fits. That test is what sets the append cap.

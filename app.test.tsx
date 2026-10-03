@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot, type RenderedSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { rpcContract } from "./server";
-import type { EnforcementLevel } from "./shared";
+import type { EnforcementLevel, Violation } from "./shared";
 
 const app = await loadPluginApp(() => import("./app"));
 const customization = app.composerCustomizations[0]!;
@@ -12,20 +12,12 @@ const Toggle = customization.actions![0]!.component;
 
 const THREAD = "th_1";
 
-interface ViolationDto {
-  id: string;
-  turnId: string | null;
-  workKind: string;
-  detail: string;
-  detectedAt: number;
-}
-
 interface StateDto {
   enabled: boolean;
   enforcement: EnforcementLevel | null;
   effectiveEnforcement: EnforcementLevel;
   enabledAt: string | null;
-  violations: ViolationDto[];
+  violations: Violation[];
   delegations: never[];
   nudgeCount: number;
   defaultForNewThreads: boolean;

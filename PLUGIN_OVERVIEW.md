@@ -27,10 +27,22 @@ not see the parent's conversation. You can wait for its result, delegate
 without waiting, or request a hidden worker. Waiting defaults to 900 seconds;
 a timeout leaves the worker running.
 
-- **instruct:** contract only.
-- **guard** (default): watch the timeline, record direct work and send
-  corrective messages up to the configured cap.
-- **block:** also stop the offending turn after detection.
+Workers run on the project's remembered provider and model unless the **Worker
+execution** settings section gives them their own, using BB's own provider and
+model picker: picking a provider scopes the models to it, and a single
+delegation can override the result in the tool call. The same section can name a
+provider and model to retry a failed worker on, once. An id the catalog does not
+offer is refused with the alternatives named.
+
+Every delegation is also meant to end in a verdict: the orchestrator records one
+per worker with `orchestrator_review`, and a turn that ends with unjudged
+workers gets one reminder. `verify: true` adds an independent check unit that
+inspects the work and reports pass or fail instead of repairing it.
+
+`instruct` writes the rules and checks nothing. `guard` (the default) also
+watches the timeline, records direct work and sends corrective messages up to
+the configured cap. `block` also stops the offending turn once direct work is
+detected.
 
 Direct image generation counts as work and must be delegated. Recognised
 read-only shell commands are allowed by default. You can treat all
@@ -52,8 +64,12 @@ your environment and use ordinary provider resources.
 ## CLI and settings
 
 `bb orchestrator-mode` provides `status`, `on`, `off`, `violations` (including
-`--clear`) and `default`. Thread commands accept `--thread`; every command
-supports `--json`. Settings control the new-thread default, enforcement,
-read-only command handling and the corrective-message cap.
+`--clear`), `default`, `worker` and `contract`. Thread commands accept
+`--thread`; every command supports `--json`. Settings control the new-thread
+default, enforcement, read-only command handling, the corrective-message cap,
+the contract shape, worker retention and the two fan-out caps. The worker
+execution and its presets are stored by the plugin and edited in Settings or
+with `bb orchestrator-mode worker`; `contract` prints the exact instructions a
+thread receives.
 
 Requires bb 0.44+ and Plugin SDK 0.5.29+. Licensed under MIT.
