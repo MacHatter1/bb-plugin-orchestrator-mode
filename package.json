@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-orchestrator-mode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Make a BB thread delegate every unit of work, with a composer toggle, worker threads and a timeline watchdog.",
   "license": "MIT",

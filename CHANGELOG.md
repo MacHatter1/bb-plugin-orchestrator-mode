@@ -6,6 +6,17 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ## Unreleased
 
+## 0.1.1 - 2026-10-05
+
+### Fixed
+
+- Notify running turns when orchestrator mode changes and provide CLI delegation
+  for existing or resumed sessions without the native tool.
+- Allow read-only `bb provider list` and `bb provider models` commands, including
+  chains with `bb status --json`.
+
+## 0.1.0 - 2026-10-01
+
 ### Added
 
 - Composer toggle, `+` menu fallback and status strip for orchestrator threads.
@@ -25,10 +36,6 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ### Fixed
 
-- Notify running turns when orchestrator mode changes and provide CLI delegation
-  for existing or resumed sessions without the native tool.
-- Allow read-only `bb provider list` and `bb provider models` commands, including
-  chains with `bb status --json`.
 - Read incremental timeline patches and nested work in completed turns so the
   watchdog does not miss direct work.
 - Serialize state mutations to retain simultaneous thread choices and worker
