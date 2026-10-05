@@ -21,6 +21,7 @@ are reading a "# ORCHESTRATOR MODE IS ON" block, it is on for you.
 
 ```
 bb orchestrator-mode status [--thread <id>] [--json]
+bb orchestrator-mode delegate --task <brief> [--title <title>] [--no-wait] [--timeout <seconds>] [--hidden] [--thread <id>] [--json]
 bb orchestrator-mode on [--thread <id>] [--enforcement instruct|guard|block] [--json]
 bb orchestrator-mode off [--thread <id>] [--json]
 bb orchestrator-mode violations [--thread <id>] [--clear] [--json]
@@ -28,8 +29,9 @@ bb orchestrator-mode default [on|off] [--json]
 ```
 
 `--thread` defaults to the thread running the command, so an agent can inspect
-or change its own mode. A change applies when the provider session is next
-constructed; a live session keeps the instructions it started with.
+or change its own mode. Running turns receive a message when the mode changes.
+Session configuration is refreshed when the provider session is next
+constructed, but resuming may retain its original tool list.
 
 ## Enforcement levels
 
@@ -50,8 +52,11 @@ it is on, at a user-initiated dispatch. It leaves existing threads, child
 workers and side chats alone.
 
 Read-only shell commands (`ls`, `cat`, `rg`, `git status`, `git diff`,
-`git log`, `find`, `wc`) do not count as work unless the plugin's
+`git log`, `find`, `wc`, `bb status`, `bb provider list`, `bb provider models`)
+do not count as work unless the plugin's
 "Read-only shell commands are not work" setting is turned off.
+Chained commands are allowed when every segment is read-only, including
+`bb status --json; bb provider models codex --environment <id> --json`.
 Creating images counts as work and must be delegated; inspecting images is
 allowed. Git commands that create or delete branches or tags, change remotes,
 or rewrite reflogs also count as work.
@@ -59,6 +64,10 @@ or rewrite reflogs also count as work.
 ## Delegating
 
 Use the `orchestrator_delegate` tool, which the mode selects for the thread.
+If it is unavailable, use `bb orchestrator-mode delegate --task 'complete brief'`.
+The CLI runs the same worker creation, recording and result handling. It is
+allowed even when read-only shell exploration is disabled. Quote the brief
+safely; `--no-wait` lets you start independent workers without waiting.
 Give it a complete, self-contained brief: the worker cannot see this
 conversation. Fan out independent units; sequence only real dependencies.
 

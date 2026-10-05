@@ -27,7 +27,11 @@ Deleted threads lose their stored state.
 
 Enabling a thread seeds the watchdog's timeline sequence from the existing
 head. Older work is not judged. A provider session cannot have its instructions
-changed while it is running, and BB may resume an existing session.
+replaced while it is running, so mode changes send steering messages to active
+turns. Idle threads receive session configuration on their next construction.
+Some providers retain the original native tool list on resume. The CLI
+`bb orchestrator-mode delegate` invokes the same delegation handler and remains
+usable in those sessions.
 
 The watchdog therefore grants one grace turn when enabled while idle. When
 enabled during an active turn, it grants that turn and one subsequent turn.
@@ -40,8 +44,11 @@ starts judging its work.
 The classifier in `shared.ts` looks at timeline rows, rather than intercepting
 tool calls. Scans consume full rows or incremental `delta.upsertRows` patches
 and request nested rows so completed turn summaries still expose their work.
-File changes and image generation count as work. Command rows count unless the
-read-only command setting allows them. Generic tool rows are classified using
+File changes and image generation count as work. Command rows count unless they
+delegate through the plugin CLI or the read-only command setting allows them.
+Delegation command checks respect quoted briefs and reject executable
+substitutions, redirections and mixed chains that perform direct work.
+Generic tool rows are classified using
 their names; this is a heuristic, not a complete description of their effects.
 
 Recognised research includes reads, searches, web fetches, plans and questions.
@@ -64,7 +71,7 @@ the stop request. This plugin is a coordination aid, not a security boundary.
 
 ## Worker lifecycle
 
-`orchestrator_delegate` creates a child in the parent's environment, without
+`orchestrator_delegate` and the `delegate` CLI create a child in the parent's environment, without
 passing the parent's conversation. Workers do not inherit the new-root-thread
 default. Their permissions and execution remain ordinary BB thread behaviour.
 

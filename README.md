@@ -77,6 +77,7 @@ accent while the mode is on.
 The `orchestrator_delegate` tool creates a child thread from a self-contained
 brief and can wait for its result. Workers use the parent's environment and
 appear in the sidebar unless you request a hidden worker.
+Existing sessions without that tool can use `bb orchestrator-mode delegate`.
 
 </td>
 </tr>
@@ -157,9 +158,10 @@ flowchart TD
   mutating commands and mutating tool names as work. Reads, searches, plans,
   questions and delegation
   remain available; command leniency is configurable.
-- **Session timing.** Instructions apply when the provider session is next
-  constructed. A live session keeps its existing instructions; the watchdog
-  grants grace turns during that transition.
+- **Session timing.** Running turns receive mode changes as steering messages.
+  Session configuration applies when the provider session is next constructed;
+  resuming can retain its original tools, so CLI delegation remains available.
+  The watchdog grants grace turns during the transition.
 
 The [design notes](docs/DESIGN.md) cover classification, retained state and
 session timing in more detail.
@@ -191,6 +193,7 @@ bb orchestrator-mode off
 | Command | Does |
 | --- | --- |
 | `status [--thread <id>] [--json]` | Show mode, enforcement, violations, nudges and delegations. |
+| `delegate --task <brief> [--title <title>] [--no-wait] [--timeout <seconds>] [--hidden] [--thread <id>] [--json]` | Run the same delegation action when the native tool is unavailable. |
 | `on [--thread <id>] [--enforcement instruct\|guard\|block] [--json]` | Enable the thread, with an optional enforcement override. |
 | `off [--thread <id>] [--json]` | Disable the thread and clear its enforcement override. |
 | `violations [--thread <id>] [--clear] [--json]` | List violations, or clear them and reset correction counters. |

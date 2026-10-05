@@ -108,6 +108,10 @@ describe("read-only command detection", () => {
     "git remote get-url origin",
     "git reflog show HEAD",
     "bb status",
+    "bb provider list --environment env_bucd4j3r9b --json",
+    "bb provider models codex --environment env_bucd4j3r9b --json",
+    "bb provider models --json",
+    "bb status --json; bb provider models codex --environment env_bucd4j3r9b --json",
     "bb guide",
     "bb --version",
     "bb --help",
@@ -155,6 +159,11 @@ describe("read-only command detection", () => {
     "bb thread spawn --prompt hi",
     "bb plugin reload x",
     "bb plugin install x",
+    "bb provider enable codex",
+    "bb provider disable codex",
+    "bb status --json; bb provider disable codex",
+    "bb provider models codex --json; npm test",
+    "bb provider models codex --json > models.json",
     "bb skills install foo",
     "bb orchestrator-mode off",
     "unknown-tool --flag",
@@ -297,12 +306,42 @@ describe("the contract", () => {
     expect(nudge).toContain("stopped");
   });
 
-  it("tells a session that predates the mode to stop rather than improvise", () => {
+  it("gives sessions without the native tool a CLI delegation route", () => {
     const nudge = buildNudge(
       [{ id: "r1", turnId: "t", workKind: "command", detail: "ran `x`", detectedAt: 0 }],
       "guard",
     );
-    expect(nudge).toContain("predates the mode");
-    expect(nudge).toContain("Do not improvise another delegation mechanism");
+    expect(nudge).toContain("bb orchestrator-mode delegate");
+    expect(buildInstructions({ enforcement: "guard", allowReadCommands: true })).toContain(
+      "bb orchestrator-mode delegate",
+    );
+  });
+
+  it("allows CLI delegation even when read-only exploration is disabled", () => {
+    for (const command of [
+      "bb orchestrator-mode delegate --task 'Implement retries; add tests > 3 cases'",
+      'bb orchestrator-mode delegate --task "Implement retries" --no-wait',
+      "bb orchestrator-mode delegate --task 'Use `npm test` and $(example) as literal text'",
+    ]) {
+      expect(classifyRow(row({ id: command, workKind: "command", command }), {
+        allowReadCommands: false,
+      })).toBeNull();
+    }
+    for (const command of [
+      "bb orchestrator-mode delegate --task x; npm test",
+      "bb orchestrator-mode delegate --task x > output.txt",
+      'bb orchestrator-mode delegate --task "$(npm test)"',
+      "bb orchestrator-mode delegate --task `npm test`",
+      "bb orchestrator-mode delegate --task x & npm test",
+      "bb orchestrator-mode delegate --task 'unterminated",
+      "bb orchestrator-mode delegate --task $'unsupported quoting'",
+    ]) {
+      expect(classifyRow(row({ id: command, workKind: "command", command }))).not.toBeNull();
+    }
+    const chain = "bb status --json; bb orchestrator-mode delegate --task 'Implement retries'";
+    expect(classifyRow(row({ id: "chain", workKind: "command", command: chain }))).toBeNull();
+    expect(classifyRow(row({ id: "chain", workKind: "command", command: chain }), {
+      allowReadCommands: false,
+    })).not.toBeNull();
   });
 });

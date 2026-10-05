@@ -22,6 +22,7 @@ import {
   defineCli,
   defineRpcContract,
   type BbPluginApi,
+  type PluginCliContext,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -440,16 +441,16 @@ export default async function plugin(bb: BbPluginApi) {
     // session lag; an idle thread loses only the next one.
     let graceTurnIds: string[] = [];
     let graceSlots = 1;
-    if (enabled) {
-      try {
-        const thread = await bb.sdk.threads.get({ threadId });
-        if (thread.status === "active" && head.turnId !== null) {
-          graceTurnIds = [head.turnId];
-          graceSlots = 2;
-        }
-      } catch (cause) {
-        bb.log.warn(`thread status read failed for ${threadId}: ${String(cause)}`);
+    let active = false;
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      active = thread.status === "active";
+      if (enabled && active && head.turnId !== null) {
+        graceTurnIds = [head.turnId];
+        graceSlots = 2;
       }
+    } catch (cause) {
+      bb.log.warn(`thread status read failed for ${threadId}: ${String(cause)}`);
     }
     const state = await mutateState(threadId, (current) => ({
       ...current,
@@ -464,6 +465,23 @@ export default async function plugin(bb: BbPluginApi) {
       lastStopTurnId: enabled ? current.lastStopTurnId : null,
     }));
     await syncMirror(threadId, state?.enabled ?? false, state?.enforcement ?? null);
+    if (active) {
+      try {
+        const text = enabled
+          ? buildInstructions({
+              enforcement: effectiveEnforcement(state),
+              allowReadCommands: live.allowReadCommands,
+            })
+          : "Orchestrator mode is now off. The earlier orchestrator contract no longer applies; continue following the user's request.";
+        await bb.sdk.threads.send({
+          threadId,
+          mode: "steer",
+          input: [{ type: "text", mentions: [], text }],
+        });
+      } catch (cause) {
+        bb.log.warn(`mode notification failed for ${threadId}: ${String(cause)}`);
+      }
+    }
     return state ?? emptyState(Date.now());
   }
 
@@ -493,6 +511,115 @@ export default async function plugin(bb: BbPluginApi) {
 
   // --- layer 1: the contract ----------------------------------------------
 
+  const delegateParameters = z.object({
+    task: z
+      .string()
+      .min(1)
+      .max(20_000)
+      .describe("Complete, self-contained brief for the worker."),
+    title: z.string().max(200).optional().describe("Worker thread title."),
+    waitForResult: z
+      .boolean()
+      .optional()
+      .describe("Wait for the worker to finish and return its result. Default true."),
+    timeoutSeconds: z
+      .number()
+      .int()
+      .min(10)
+      .max(3600)
+      .optional()
+      .describe("How long to wait. Default 900."),
+    hidden: z
+      .boolean()
+      .optional()
+      .describe("Keep the worker out of the sidebar. Default false."),
+  });
+
+  async function delegateTask(
+    { task, title, waitForResult, timeoutSeconds, hidden }: z.infer<typeof delegateParameters>,
+    { threadId, projectId, signal }: PluginCliContext,
+  ): Promise<string> {
+    if (threadId === undefined) {
+      throw new Error("orchestrator_delegate needs a thread context.");
+    }
+    const parent = await bb.sdk.threads.get({ threadId });
+    const environment =
+      parent.environmentId === null
+        ? { type: "project-default" as const }
+        : { type: "reuse" as const, environmentId: parent.environmentId };
+    const workerTitle = title?.trim() || task.trim().split("\n")[0]!.slice(0, 120);
+
+    const worker = await bb.sdk.threads.spawn({
+      projectId: projectId ?? parent.projectId,
+      environment,
+      prompt: task,
+      title: workerTitle,
+      parentThreadId: threadId,
+      ...(hidden === true ? { visibility: "hidden" as const } : {}),
+      pluginMetadata: { workerFor: threadId },
+    });
+
+    await mutateState(threadId, (current) => ({
+      ...current,
+      delegations: [
+        ...current.delegations,
+        {
+          threadId: worker.id,
+          title: workerTitle,
+          task: task.slice(0, 400),
+          createdAt: Date.now(),
+          status: null,
+        },
+      ].slice(-MAX_DELEGATIONS),
+    }));
+
+    if (waitForResult === false) {
+      return `Delegated without waiting.\nWorker thread: ${worker.id} — "${workerTitle}"\nCheck on it later and fold its result into your report.`;
+    }
+
+    const timeoutMs = Math.min(Math.max(timeoutSeconds ?? 900, 10), 3600) * 1000;
+    const deadline = Date.now() + timeoutMs;
+    let status: string | null = null;
+    try {
+      await bb.sdk.threads.wait({ threadId: worker.id, status: "idle", timeoutMs, signal });
+    } catch {
+      // A timeout or an error status both land here; read the real status.
+    }
+    try {
+      const settled = await bb.sdk.threads.get({ threadId: worker.id });
+      status = settled.status;
+    } catch {
+      status = null;
+    }
+    await mutateState(threadId, (current) => ({
+      ...current,
+      delegations: current.delegations.map((delegation) =>
+        delegation.threadId === worker.id ? { ...delegation, status } : delegation,
+      ),
+    }));
+
+    if (Date.now() >= deadline && status !== "idle" && status !== "error") {
+      return `Worker ${worker.id} is still running after ${Math.round(timeoutMs / 1000)}s (status: ${status ?? "unknown"}). Delegate the next unit, or wait and check it again — do not start doing its work yourself.`;
+    }
+
+    let output: string | null = null;
+    try {
+      const result = await bb.sdk.threads.output({ threadId: worker.id });
+      output = (result as { output?: string | null }).output ?? null;
+    } catch (cause) {
+      bb.log.warn(`worker output read failed for ${worker.id}: ${String(cause)}`);
+    }
+
+    const trimmed = (output ?? "").trim();
+    const body =
+      trimmed === ""
+        ? "(the worker produced no final text — open the thread to see what it did)"
+        : trimmed.length > 12_000
+          ? `${trimmed.slice(0, 12_000)}\n\n[truncated]`
+          : trimmed;
+    return `Worker ${worker.id} finished with status "${status ?? "unknown"}".\n\n${body}\n\nReview it. If it is wrong or incomplete, send a follow-up to a worker — do not fix it yourself.`;
+  }
+
   bb.agents.registerTool({
     name: DELEGATE_TOOL,
     description:
@@ -505,113 +632,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Delegated to a worker thread",
       },
     },
-    parameters: z.object({
-      task: z
-        .string()
-        .min(1)
-        .max(20_000)
-        .describe("Complete, self-contained brief for the worker."),
-      title: z.string().max(200).optional().describe("Worker thread title."),
-      waitForResult: z
-        .boolean()
-        .optional()
-        .describe("Wait for the worker to finish and return its result. Default true."),
-      timeoutSeconds: z
-        .number()
-        .int()
-        .min(10)
-        .max(3600)
-        .optional()
-        .describe("How long to wait. Default 900."),
-      hidden: z
-        .boolean()
-        .optional()
-        .describe("Keep the worker out of the sidebar. Default false."),
-    }),
-    async execute(
-      { task, title, waitForResult, timeoutSeconds, hidden },
-      { threadId, projectId, signal },
-    ) {
-      if (threadId === undefined || projectId === undefined) {
-        throw new Error("orchestrator_delegate needs a thread context.");
-      }
-      const parent = await bb.sdk.threads.get({ threadId });
-      const environment =
-        parent.environmentId === null
-          ? { type: "project-default" as const }
-          : { type: "reuse" as const, environmentId: parent.environmentId };
-      const workerTitle = title?.trim() || task.trim().split("\n")[0]!.slice(0, 120);
-
-      const worker = await bb.sdk.threads.spawn({
-        projectId,
-        environment,
-        prompt: task,
-        title: workerTitle,
-        parentThreadId: threadId,
-        ...(hidden === true ? { visibility: "hidden" as const } : {}),
-        pluginMetadata: { workerFor: threadId },
-      });
-
-      await mutateState(threadId, (current) => ({
-        ...current,
-        delegations: [
-          ...current.delegations,
-          {
-            threadId: worker.id,
-            title: workerTitle,
-            task: task.slice(0, 400),
-            createdAt: Date.now(),
-            status: null,
-          },
-        ].slice(-MAX_DELEGATIONS),
-      }));
-
-      if (waitForResult === false) {
-        return `Delegated without waiting.\nWorker thread: ${worker.id} — "${workerTitle}"\nCheck on it later and fold its result into your report.`;
-      }
-
-      const timeoutMs = Math.min(Math.max(timeoutSeconds ?? 900, 10), 3600) * 1000;
-      const deadline = Date.now() + timeoutMs;
-      let status: string | null = null;
-      try {
-        await bb.sdk.threads.wait({ threadId: worker.id, status: "idle", timeoutMs, signal });
-      } catch {
-        // A timeout or an error status both land here; read the real status.
-      }
-      try {
-        const settled = await bb.sdk.threads.get({ threadId: worker.id });
-        status = settled.status;
-      } catch {
-        status = null;
-      }
-      await mutateState(threadId, (current) => ({
-        ...current,
-        delegations: current.delegations.map((delegation) =>
-          delegation.threadId === worker.id ? { ...delegation, status } : delegation,
-        ),
-      }));
-
-      if (Date.now() >= deadline && status !== "idle" && status !== "error") {
-        return `Worker ${worker.id} is still running after ${Math.round(timeoutMs / 1000)}s (status: ${status ?? "unknown"}). Delegate the next unit, or wait and check it again — do not start doing its work yourself.`;
-      }
-
-      let output: string | null = null;
-      try {
-        const result = await bb.sdk.threads.output({ threadId: worker.id });
-        output = (result as { output?: string | null }).output ?? null;
-      } catch (cause) {
-        bb.log.warn(`worker output read failed for ${worker.id}: ${String(cause)}`);
-      }
-
-      const trimmed = (output ?? "").trim();
-      const body =
-        trimmed === ""
-          ? "(the worker produced no final text — open the thread to see what it did)"
-          : trimmed.length > 12_000
-            ? `${trimmed.slice(0, 12_000)}\n\n[truncated]`
-            : trimmed;
-      return `Worker ${worker.id} finished with status "${status ?? "unknown"}".\n\n${body}\n\nReview it. If it is wrong or incomplete, send a follow-up to a worker — do not fix it yourself.`;
-    },
+    parameters: delegateParameters,
+    execute: delegateTask,
   });
 
   bb.agents.configure((context) => {
@@ -921,6 +943,38 @@ export default async function plugin(bb: BbPluginApi) {
             return render(input.options.json, state, describeState(threadId, state));
           },
         }),
+        delegate: cliCommand({
+          summary: "Delegate to a worker when the native tool is unavailable",
+          options: {
+            ...threadOption,
+            task: { type: "string", required: true, description: "Complete, self-contained worker brief (1–20,000 characters)" },
+            title: { type: "string", description: "Worker title (at most 200 characters)" },
+            "no-wait": { type: "boolean", description: "Return immediately so other units can be delegated" },
+            timeout: { type: "integer", min: 10, max: 3600, description: "Wait timeout in seconds (default 900)" },
+            hidden: { type: "boolean", description: "Keep the worker out of the sidebar" },
+          },
+          async run(input, ctx) {
+            const threadId = resolveThreadId(input.options.thread, ctx);
+            const parsed = delegateParameters.safeParse({
+              task: input.options.task,
+              title: input.options.title,
+              waitForResult: input.options["no-wait"] !== true,
+              timeoutSeconds: input.options.timeout,
+              hidden: input.options.hidden,
+            });
+            if (!parsed.success) {
+              throw new PluginCliError("invalid delegation arguments", {
+                code: "invalid_arguments",
+                hint: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "),
+              });
+            }
+            const output = await delegateTask(parsed.data, {
+              ...ctx, threadId,
+              projectId: input.options.thread === undefined ? ctx.projectId : undefined,
+            });
+            return render(input.options.json, { output }, output);
+          },
+        }),
         on: cliCommand({
           summary: "Turn orchestrator mode on for a thread",
           options: {
@@ -944,7 +998,7 @@ export default async function plugin(bb: BbPluginApi) {
               input.options.json,
               dto,
               `Orchestrator mode ON for ${threadId} (${dto.effectiveEnforcement}).\n` +
-                "Applies when the provider session is next constructed — a live session keeps the instructions it started with.",
+                "Running turns are notified now. If the native tool is unavailable, use bb orchestrator-mode delegate.",
             );
           },
         }),
