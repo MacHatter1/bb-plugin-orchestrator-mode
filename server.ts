@@ -518,6 +518,20 @@ export default async function plugin(bb: BbPluginApi) {
       .max(20_000)
       .describe("Complete, self-contained brief for the worker."),
     title: z.string().max(200).optional().describe("Worker thread title."),
+    providerId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe("Pin the worker to this registered provider before it starts. Omit for BB's default selection."),
+    model: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Pin the worker to this model before it starts. Use a model advertised by the selected provider; omit for BB's default selection."),
     waitForResult: z
       .boolean()
       .optional()
@@ -536,7 +550,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   async function delegateTask(
-    { task, title, waitForResult, timeoutSeconds, hidden }: z.infer<typeof delegateParameters>,
+    { task, title, providerId, model, waitForResult, timeoutSeconds, hidden }: z.infer<typeof delegateParameters>,
     { threadId, projectId, signal }: PluginCliContext,
   ): Promise<string> {
     if (threadId === undefined) {
@@ -555,6 +569,8 @@ export default async function plugin(bb: BbPluginApi) {
       prompt: task,
       title: workerTitle,
       parentThreadId: threadId,
+      ...(providerId === undefined ? {} : { providerId }),
+      ...(model === undefined ? {} : { model }),
       ...(hidden === true ? { visibility: "hidden" as const } : {}),
       pluginMetadata: { workerFor: threadId },
     });
@@ -623,7 +639,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: DELEGATE_TOOL,
     description:
-      "Hand one unit of work to a worker thread and get its result back. The only way an orchestrator-mode thread gets work done. The worker cannot see this conversation, so `task` must be a complete, self-contained brief: goal, context, constraints, and what done means.",
+      "Hand one unit of work to a worker thread and get its result back. Optionally pin its providerId and model before it starts. The only way an orchestrator-mode thread gets work done. The worker cannot see this conversation, so `task` must be a complete, self-contained brief: goal, context, constraints, and what done means.",
     instructions:
       "In orchestrator mode, delegate every unit of real work with orchestrator_delegate instead of doing it yourself. Fan out independent units in parallel; sequence only genuine dependencies.",
     presentation: {
@@ -949,6 +965,8 @@ export default async function plugin(bb: BbPluginApi) {
             ...threadOption,
             task: { type: "string", required: true, description: "Complete, self-contained worker brief (1–20,000 characters)" },
             title: { type: "string", description: "Worker title (at most 200 characters)" },
+            provider: { type: "string", aliases: ["provider-id", "providerId"], description: "Pin the worker's registered provider before it starts (1–120 characters)" },
+            model: { type: "string", description: "Pin the worker's model before it starts (1–200 characters)" },
             "no-wait": { type: "boolean", description: "Return immediately so other units can be delegated" },
             timeout: { type: "integer", min: 10, max: 3600, description: "Wait timeout in seconds (default 900)" },
             hidden: { type: "boolean", description: "Keep the worker out of the sidebar" },
@@ -958,6 +976,8 @@ export default async function plugin(bb: BbPluginApi) {
             const parsed = delegateParameters.safeParse({
               task: input.options.task,
               title: input.options.title,
+              providerId: input.options.provider,
+              model: input.options.model,
               waitForResult: input.options["no-wait"] !== true,
               timeoutSeconds: input.options.timeout,
               hidden: input.options.hidden,

@@ -6,6 +6,11 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- Allow explicit provider/model pins in the delegation tool and CLI before
+  workers start, so provider-constrained personas can keep orchestrator mode on.
+
 ## 0.1.1 - 2026-10-05
 
 ### Fixed

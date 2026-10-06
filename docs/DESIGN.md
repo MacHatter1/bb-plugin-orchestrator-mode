@@ -74,6 +74,12 @@ the stop request. This plugin is a coordination aid, not a security boundary.
 `orchestrator_delegate` and the `delegate` CLI create a child in the parent's environment, without
 passing the parent's conversation. Workers do not inherit the new-root-thread
 default. Their permissions and execution remain ordinary BB thread behaviour.
+Optional `providerId` and `model` pins (CLI: `--provider` and `--model`) are
+validated at the input boundary and passed directly to `threads.spawn`, so
+selection happens before the worker's first turn, not through a later update.
+Omitted fields preserve BB's default selection. Provider/model availability is
+validated by BB; a failed spawn is not retried with an unpinned worker and
+creates no delegation record.
 
 The tool waits by default, reports the settled status and returns up to 12,000
 characters of final output. With `waitForResult: false`, it returns the worker

@@ -21,7 +21,7 @@ are reading a "# ORCHESTRATOR MODE IS ON" block, it is on for you.
 
 ```
 bb orchestrator-mode status [--thread <id>] [--json]
-bb orchestrator-mode delegate --task <brief> [--title <title>] [--no-wait] [--timeout <seconds>] [--hidden] [--thread <id>] [--json]
+bb orchestrator-mode delegate --task <brief> [--title <title>] [--provider <id>] [--model <id>] [--no-wait] [--timeout <seconds>] [--hidden] [--thread <id>] [--json]
 bb orchestrator-mode on [--thread <id>] [--enforcement instruct|guard|block] [--json]
 bb orchestrator-mode off [--thread <id>] [--json]
 bb orchestrator-mode violations [--thread <id>] [--clear] [--json]
@@ -72,10 +72,24 @@ Give it a complete, self-contained brief: the worker cannot see this
 conversation. Fan out independent units; sequence only real dependencies.
 
 Arguments are `task` (required, at most 20,000 characters), `title` (optional,
-at most 200), `waitForResult` (default `true`), `timeoutSeconds` (default `900`,
-integer range 10–3,600) and `hidden` (default `false`). A timeout or
-`waitForResult: false` leaves the worker running; inspect that worker later
-and review its result.
+at most 200), `providerId` (optional, 1–120), `model` (optional, 1–200),
+`waitForResult` (default `true`), `timeoutSeconds` (default `900`, integer range
+10–3,600) and `hidden` (default `false`). A timeout or `waitForResult: false`
+leaves the worker running; inspect that worker later and review its result.
+
+If your persona or task requires specific workers, pass `providerId` and
+`model` to the tool. The CLI equivalents are `--provider <id> --model <id>`;
+`--provider-id` and `--providerId` are aliases for `--provider`. Pins are set
+at creation, before the worker's first turn. Omitted pins use BB's normal
+default selection; blank pins are rejected after trimming whitespace. BB
+validates availability, and a failed spawn is never retried with unpinned
+workers. Discover registered IDs with `bb provider list` and
+`bb provider models <provider-id>` on the parent's environment. You do not
+need to turn orchestrator mode off to pin workers.
+
+A resumed session may retain an older native tool schema without the pin
+arguments. In that case, use the CLI route with `--provider` and `--model`
+rather than attempting unpinned delegation.
 
 The default corrective-message cap is three per enablement. Recording and
 block-mode stops continue after the cap. Clearing violations or disabling the

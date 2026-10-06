@@ -76,7 +76,8 @@ accent while the mode is on.
 
 The `orchestrator_delegate` tool creates a child thread from a self-contained
 brief and can wait for its result. Workers use the parent's environment and
-appear in the sidebar unless you request a hidden worker.
+appear in the sidebar unless you request a hidden worker. Optional `providerId`
+and `model` pins are applied before the worker starts.
 Existing sessions without that tool can use `bb orchestrator-mode delegate`.
 
 </td>
@@ -193,7 +194,7 @@ bb orchestrator-mode off
 | Command | Does |
 | --- | --- |
 | `status [--thread <id>] [--json]` | Show mode, enforcement, violations, nudges and delegations. |
-| `delegate --task <brief> [--title <title>] [--no-wait] [--timeout <seconds>] [--hidden] [--thread <id>] [--json]` | Run the same delegation action when the native tool is unavailable. |
+| `delegate --task <brief> [--title <title>] [--provider <id>] [--model <id>] [--no-wait] [--timeout <seconds>] [--hidden] [--thread <id>] [--json]` | Run the same delegation action, with optional worker pins, when the native tool is unavailable. |
 | `on [--thread <id>] [--enforcement instruct\|guard\|block] [--json]` | Enable the thread, with an optional enforcement override. |
 | `off [--thread <id>] [--json]` | Disable the thread and clear its enforcement override. |
 | `violations [--thread <id>] [--clear] [--json]` | List violations, or clear them and reset correction counters. |
@@ -205,11 +206,29 @@ ordinary terminal, provide a thread ID for thread commands.
 </details>
 
 **Agent tool:**
-`orchestrator_delegate({ task, title?, waitForResult?, timeoutSeconds?, hidden? })`.
+`orchestrator_delegate({ task, title?, providerId?, model?, waitForResult?, timeoutSeconds?, hidden? })`.
 The brief is required and limited to 20,000 characters; the title is limited to
 200. Waiting defaults to `true`, with a 900-second timeout (range 10–3,600).
 `hidden` defaults to `false`. A timeout returns the worker's status and leaves it
-running. The bundled [skill](skills/orchestrator-mode/SKILL.md) explains the mode,
+running.
+
+Optional `providerId` (1–120 characters) and `model` (1–200) pin the worker at
+creation, before its first turn. The CLI equivalents are `--provider` (aliases
+`--provider-id` and `--providerId`) and `--model`. Surrounding whitespace is
+trimmed; blank pins are rejected. Omitted pins retain BB's normal default
+selection. BB validates provider/model availability; a rejected spawn is not
+retried with different or unpinned workers.
+
+Discover real IDs with `bb provider list` and `bb provider models <provider-id>`
+on the worker's environment. Pinning workers does **not** require disabling
+orchestrator mode:
+
+```sh
+bb orchestrator-mode delegate --task 'Complete, self-contained brief' \
+  --provider <provider-id> --model <model-id> --no-wait
+```
+
+The bundled [skill](skills/orchestrator-mode/SKILL.md) explains the mode,
 delegation and CLI; enabled sessions receive the contract directly.
 
 ## Settings

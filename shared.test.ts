@@ -275,6 +275,13 @@ describe("the contract", () => {
     expect(text.toLowerCase()).toContain("editing");
   });
 
+  it("explains how to pin workers without disabling the mode", () => {
+    const text = buildInstructions({ enforcement: "guard", allowReadCommands: true });
+    expect(text).toContain("`providerId` and `model`");
+    expect(text).toContain("--provider <id> --model <id>");
+    expect(text).toContain("pinning does not require turning this mode off");
+  });
+
   it("only warns about the watchdog when one is running", () => {
     expect(buildInstructions({ enforcement: "instruct", allowReadCommands: true })).toContain(
       "nothing is watching",
@@ -321,6 +328,8 @@ describe("the contract", () => {
     for (const command of [
       "bb orchestrator-mode delegate --task 'Implement retries; add tests > 3 cases'",
       'bb orchestrator-mode delegate --task "Implement retries" --no-wait',
+      "bb orchestrator-mode delegate --task 'Probe the scope' --provider grok --model grok-test-model --no-wait",
+      "bb orchestrator-mode delegate --task 'Probe the scope' --provider-id grok --model grok-test-model",
       "bb orchestrator-mode delegate --task 'Use `npm test` and $(example) as literal text'",
     ]) {
       expect(classifyRow(row({ id: command, workKind: "command", command }), {

@@ -606,6 +606,8 @@ describe("the delegation tool", () => {
       prompt: "Implement the retry policy in src/retry.ts",
       environment: { type: "reuse", environmentId: "env_1" },
     });
+    expect(spawned[0]).not.toHaveProperty("providerId");
+    expect(spawned[0]).not.toHaveProperty("model");
     expect(String(result)).toContain("the worker finished the task");
     expect(String(result)).toContain(WORKER);
 
@@ -614,6 +616,92 @@ describe("the delegation tool", () => {
     };
     expect(state.delegations).toHaveLength(1);
     expect(state.delegations[0]!.threadId).toBe(WORKER);
+  });
+
+  it("pins the requested provider and model before starting a worker", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    await harness.behavior.callAgentTool(
+      DELEGATE_TOOL,
+      {
+        task: "Probe the contract and scope without changing project files",
+        providerId: "grok",
+        model: "grok-test-model",
+        waitForResult: false,
+      },
+      { threadId: THREAD, projectId: "proj_1" },
+    );
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).toMatchObject({
+      providerId: "grok",
+      model: "grok-test-model",
+      parentThreadId: THREAD,
+    });
+    expect(harness.inspection.sdk.callsTo("threads.update")).toEqual([]);
+    expect(await harness.behavior.callRpc("get_state", { threadId: THREAD })).toMatchObject({
+      enabled: true,
+      delegations: [{ threadId: WORKER }],
+    });
+  });
+
+  it.each([
+    { providerId: "grok" },
+    { model: "grok-test-model" },
+  ])("supports an individual worker pin: %j", async (pins) => {
+    const { harness } = await load();
+    await harness.behavior.callAgentTool(
+      DELEGATE_TOOL,
+      { task: "Probe the scope", ...pins, waitForResult: false },
+      { threadId: THREAD },
+    );
+    expect(spawned[0]).toMatchObject(pins);
+    for (const key of ["providerId", "model"]) {
+      if (!(key in pins)) expect(spawned[0]).not.toHaveProperty(key);
+    }
+  });
+
+  it("normalises surrounding whitespace in worker pins", async () => {
+    const { harness } = await load();
+    await harness.behavior.callAgentTool(
+      DELEGATE_TOOL,
+      { task: "Probe the scope", providerId: " grok ", model: " grok-test-model ", waitForResult: false },
+      { threadId: THREAD },
+    );
+    expect(spawned[0]).toMatchObject({ providerId: "grok", model: "grok-test-model" });
+  });
+
+  it.each([
+    { providerId: "" },
+    { providerId: "   " },
+    { providerId: "x".repeat(121) },
+    { model: "" },
+    { model: "   " },
+    { model: "x".repeat(201) },
+  ])("rejects invalid worker pins before spawning: %j", async (pins) => {
+    const { harness } = await load();
+    await expect(harness.behavior.callAgentTool(
+      DELEGATE_TOOL, { task: "Probe the scope", ...pins }, { threadId: THREAD },
+    )).rejects.toThrow();
+    expect(spawned).toEqual([]);
+  });
+
+  it("does not fall back to an unpinned worker when BB rejects the pins", async () => {
+    const { harness } = await load();
+    harness.inspection.sdk.stub("threads.spawn", async () => {
+      throw new Error("requested provider/model unavailable");
+    });
+    await expect(harness.behavior.callAgentTool(
+      DELEGATE_TOOL,
+      { task: "Probe the scope", providerId: "grok", model: "grok-test-model" },
+      { threadId: THREAD },
+    )).rejects.toThrow("requested provider/model unavailable");
+    const calls = harness.inspection.sdk.callsTo("threads.spawn");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![0]).toMatchObject({ providerId: "grok", model: "grok-test-model" });
+    expect(harness.inspection.sdk.callsTo("threads.wait")).toEqual([]);
+    expect(await harness.behavior.callRpc("get_state", { threadId: THREAD })).toMatchObject({
+      delegations: [],
+    });
   });
 
   it("returns immediately when asked not to wait", async () => {
@@ -761,12 +849,53 @@ describe("cli", () => {
     expect(harness.inspection.sdk.callsTo("threads.wait")).toEqual([]);
   });
 
+  it("pins the requested provider and model through CLI delegation", async () => {
+    const { harness } = await load();
+    const result = await harness.behavior.runCli([
+      "delegate", "--task", "Probe the contract and scope",
+      "--provider", "grok", "--model", "grok-test-model", "--no-wait",
+    ], { threadId: THREAD, projectId: "proj_1" });
+    expect(result.exitCode).toBe(0);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).toMatchObject({
+      providerId: "grok",
+      model: "grok-test-model",
+      parentThreadId: THREAD,
+    });
+    expect(harness.inspection.sdk.callsTo("threads.update")).toEqual([]);
+  });
+
+  it.each(["--provider-id", "--providerId"])("accepts the %s CLI alias", async (flag) => {
+    const { harness } = await load();
+    const result = await harness.behavior.runCli([
+      "delegate", "--task", "Probe the scope", flag, "grok",
+      "--model", "grok-test-model", "--no-wait",
+    ], { threadId: THREAD });
+    expect(result.exitCode).toBe(0);
+    expect(spawned[0]).toMatchObject({ providerId: "grok", model: "grok-test-model" });
+  });
+
+  it("advertises worker pins in CLI help", async () => {
+    const { harness } = await load();
+    const result = await harness.behavior.runCli(["delegate", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("--provider");
+    expect(result.stdout).toContain("--model");
+    expect(spawned).toEqual([]);
+  });
+
   it("rejects invalid CLI delegation arguments before spawning", async () => {
     const { harness } = await load();
     for (const args of [
       ["--task", ""],
       ["--task", "x".repeat(20_001)],
       ["--task", "x", "--timeout", "9"],
+      ["--task", "x", "--provider", ""],
+      ["--task", "x", "--provider", "   "],
+      ["--task", "x", "--provider", "x".repeat(121)],
+      ["--task", "x", "--model", ""],
+      ["--task", "x", "--model", "   "],
+      ["--task", "x", "--model", "x".repeat(201)],
     ]) {
       const result = await harness.behavior.runCli(["delegate", ...args, "--json"], { threadId: THREAD });
       expect(result.exitCode).toBe(1);

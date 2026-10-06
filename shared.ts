@@ -539,6 +539,9 @@ ${commands}
    use \`bb orchestrator-mode delegate --task 'complete brief'\` instead; this
    runs the same delegation action without needing a new provider tool.
    Quote the brief safely; use \`--no-wait\` to fan out independent units.
+   To pin workers before they start, pass \`providerId\` and \`model\` to the
+   tool, or \`--provider <id> --model <id>\` to the CLI. Use registered provider
+   and model IDs; pinning does not require turning this mode off.
    Resuming a provider session may retain its original tool list.
 4. Review what comes back. If a result is wrong or incomplete, send a follow-up
    to a worker — never patch it yourself.
