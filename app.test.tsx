@@ -2,8 +2,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot, type RenderedSlot } from "@get-bb/plugin-sdk/testing/app";
-import type { rpcContract } from "./server";
-import type { EnforcementLevel } from "./shared";
+import type { EnforcementLevel, Violation, WorkerConfig } from "./shared";
 
 const app = await loadPluginApp(() => import("./app"));
 const customization = app.composerCustomizations[0]!;
@@ -12,20 +11,12 @@ const Toggle = customization.actions![0]!.component;
 
 const THREAD = "th_1";
 
-interface ViolationDto {
-  id: string;
-  turnId: string | null;
-  workKind: string;
-  detail: string;
-  detectedAt: number;
-}
-
 interface StateDto {
   enabled: boolean;
   enforcement: EnforcementLevel | null;
   effectiveEnforcement: EnforcementLevel;
   enabledAt: string | null;
-  violations: ViolationDto[];
+  violations: Violation[];
   delegations: never[];
   nudgeCount: number;
   defaultForNewThreads: boolean;
@@ -310,5 +301,316 @@ describe("new-thread composer", () => {
     const host = mount(Host, rpc, composeOptions());
     await flush();
     expect(host.container.textContent).toBe("");
+  });
+});
+
+describe("the settings section", () => {
+  /** The section's own RPC surface: the settings of one scope, the worker configuration and the rules append. */
+  function makeSettingsRpc(initial: WorkerConfig = {}) {
+    let worker: WorkerConfig = initial;
+    let extra = "";
+    let newThreads = false;
+    /** The global record the server would resolve every scope over. */
+    const globals: Record<string, unknown> = {
+      enforcement: "guard",
+      allowReadCommands: true,
+      maxNudges: 3,
+      maxParallelWorkers: 8,
+      maxDelegationsPerTurn: 20,
+      contractPreset: "standard",
+      workerRetention: "keep",
+      workerWorkspace: "shared",
+    };
+    const projectWorker: Record<string, WorkerConfig> = {};
+    const projectRules: Record<string, string> = {};
+    const projectSettings: Record<string, Record<string, unknown>> = {};
+    /** One scope's settings as the server returns them. */
+    const scopeView = (projectId: string | null) => ({
+      values: projectId === null ? globals : { ...globals, ...(projectSettings[projectId] ?? {}) },
+      global: globals,
+      overridden: projectId === null ? [] : Object.keys(projectSettings[projectId] ?? {}),
+    });
+    const calls: { method: string; input: unknown }[] = [];
+    const handlers = {
+      get_default: async () => {
+        calls.push({ method: "get_default", input: null });
+        return { enabled: newThreads };
+      },
+      set_default: async (input: { enabled: boolean }) => {
+        calls.push({ method: "set_default", input });
+        newThreads = input.enabled;
+        return { enabled: newThreads };
+      },
+      get_worker_execution: async () => {
+        calls.push({ method: "get_worker_execution", input: null });
+        return worker;
+      },
+      set_worker_execution: async (next: WorkerConfig | null) => {
+        calls.push({ method: "set_worker_execution", input: next });
+        worker = next ?? {};
+        return worker;
+      },
+      get_contract: async () => {
+        calls.push({ method: "get_contract", input: { threadId: null } });
+        return { text: "contract text", extra, limit: 370 };
+      },
+      set_contract: async (input: { extra: string }) => {
+        calls.push({ method: "set_contract", input });
+        extra = input.extra;
+        return { text: "contract text", extra, limit: 370 };
+      },
+      get_project_worker: async (input: { projectId: string }) => {
+        calls.push({ method: "get_project_worker", input });
+        return projectWorker[input.projectId] ?? {};
+      },
+      set_project_worker: async (input: { projectId: string; config: WorkerConfig | null }) => {
+        calls.push({ method: "set_project_worker", input });
+        if (input.config === null) delete projectWorker[input.projectId];
+        else projectWorker[input.projectId] = input.config;
+        return projectWorker[input.projectId] ?? {};
+      },
+      get_project_rules: async (input: { projectId: string }) => {
+        calls.push({ method: "get_project_rules", input });
+        return { text: "contract text", extra: projectRules[input.projectId] ?? "", limit: 370 };
+      },
+      set_project_rules: async (input: { projectId: string; extra: string }) => {
+        calls.push({ method: "set_project_rules", input });
+        projectRules[input.projectId] = input.extra;
+        return { text: "contract text", extra: input.extra, limit: 370 };
+      },
+      get_scope_settings: async (input: { projectId: string | null }) => {
+        calls.push({ method: "get_scope_settings", input });
+        return scopeView(input.projectId);
+      },
+      set_scope_setting: async (input: { projectId: string | null; key: string; value: unknown }) => {
+        calls.push({ method: "set_scope_setting", input });
+        if (input.projectId === null) {
+          globals[input.key] = input.value;
+        } else {
+          const current = { ...(projectSettings[input.projectId] ?? {}) };
+          if (input.value === null) delete current[input.key];
+          else current[input.key] = input.value;
+          projectSettings[input.projectId] = current;
+        }
+        return scopeView(input.projectId);
+      },
+    };
+    return {
+      handlers,
+      calls,
+      /** The inputs one method was called with, in order. */
+      inputsOf: (method: string) => calls.filter((call) => call.method === method).map((call) => call.input),
+      worker: () => worker,
+    };
+  }
+
+  /** A catalog stand-in: one available provider, one default model. */
+  const settingsSdk = {
+    projects: {
+      list: async () => [
+        { id: "proj_alpha", name: "Alpha" },
+        { id: "proj_beta", name: "Beta" },
+      ],
+    },
+    providers: {
+      models: async (input?: { providerId?: string }) =>
+        input?.providerId === undefined
+          ? { providers: [{ id: "command-code", name: "Command Code", available: true }], permissionCeiling: "accept-edits" }
+          : { models: [{ id: "model-a", name: "Model A", isDefault: true, defaultReasoningEffort: "high" }] },
+    },
+  };
+
+  const section = app.settingsSections[0]!;
+
+  function mountSettings(rpc: ReturnType<typeof makeSettingsRpc>) {
+    const slot = renderSlot({ component: section.component }, {}, {
+      rpc: rpc.handlers as never,
+      sdk: settingsSdk as never,
+    });
+    slots.push(slot);
+    return slot;
+  }
+
+  const lastWrite = (rpc: ReturnType<typeof makeSettingsRpc>) =>
+    [...rpc.calls].reverse().find((call) => call.method === "set_worker_execution")?.input as WorkerConfig | undefined;
+
+  it("writes a seeded execution on Custom and clears it on Inherit", async () => {
+    const rpc = makeSettingsRpc();
+    const slot = mountSettings(rpc);
+    await flush();
+
+    await click(within(slot.container).getByRole("button", { name: "Custom" }));
+    expect(lastWrite(rpc)).toMatchObject({ providerId: "command-code", model: "model-a", reasoningLevel: "high" });
+
+    await click(within(slot.container).getByRole("button", { name: "Inherit" }));
+    expect(lastWrite(rpc)).toEqual({});
+  });
+
+  it("sets a retry target on Retry and drops it on Report", async () => {
+    const rpc = makeSettingsRpc({ providerId: "command-code", model: "model-a" });
+    const slot = mountSettings(rpc);
+    await flush();
+
+    await click(within(slot.container).getByRole("button", { name: "Retry" }));
+    expect(lastWrite(rpc)).toMatchObject({ fallback: { providerId: "command-code", model: "model-a" } });
+
+    await click(within(slot.container).getByRole("button", { name: "Report" }));
+    expect(lastWrite(rpc)).toEqual({ providerId: "command-code", model: "model-a" });
+  });
+
+  it("shows a partial preset as repairable instead of Unsupported", async () => {
+    const rpc = makeSettingsRpc({ providerId: "command-code", model: "model-a", presets: { research: { reasoningLevel: "high" } } });
+    const slot = mountSettings(rpc);
+    await flush();
+
+    // Scoped to the Research row: the provider pickers elsewhere on the page render the
+    // SDK's own "Unsupported" for a model their catalog does not list, which is not this.
+    const researchRow = within(slot.container).getByText("Research").closest("div")!;
+    expect(researchRow.textContent).not.toContain("Unsupported");
+    expect(researchRow.textContent).toContain("Saved without a provider and model");
+
+    // The Set button repairs it into a complete preset, which is what fills the row.
+    const setButtons = within(slot.container).getAllByRole("button", { name: "Set" });
+    await click(setButtons[2]!);
+    expect(lastWrite(rpc)).toMatchObject({ presets: { research: { providerId: "command-code", model: "model-a" } } });
+  });
+
+  it("writes the project rules through", async () => {
+    const rpc = makeSettingsRpc();
+    const slot = mountSettings(rpc);
+    await flush();
+
+    const textarea = within(slot.container).getByRole("textbox");
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: "Never touch files under generated/." } });
+    });
+    await click(within(slot.container).getByRole("button", { name: "Save rules" }));
+    expect(rpc.calls.filter((call) => call.method === "set_contract").at(-1)?.input).toEqual({
+      extra: "Never touch files under generated/.",
+    });
+  });
+  it("writes the global record from the rows while Global is selected", async () => {
+    const rpc = makeSettingsRpc();
+    const slot = mountSettings(rpc);
+    await flush();
+
+    // Global scope offers no Inherit: the record has nothing above it to fall back to.
+    const enforcement = within(slot.container).getByLabelText("Enforcement") as HTMLSelectElement;
+    expect(Array.from(enforcement.options, (option) => option.textContent)).toEqual([
+      "instruct",
+      "guard",
+      "block",
+    ]);
+    await act(async () => {
+      fireEvent.change(enforcement, { target: { value: "block" } });
+    });
+    await flush();
+    expect(rpc.calls.filter((call) => call.method === "set_scope_setting").at(-1)?.input).toEqual({
+      projectId: null,
+      key: "enforcement",
+      value: "block",
+    });
+    expect((within(slot.container).getByLabelText("Enforcement") as HTMLSelectElement).value).toBe("block");
+
+    // The contract level is one row with three levels, and writes its own key.
+    const shape = within(slot.container).getByLabelText("What the orchestrator is told") as HTMLSelectElement;
+    expect(Array.from(shape.options, (option) => option.textContent)).toEqual([
+      "standard",
+      "review-heavy",
+      "delegate-only",
+    ]);
+    await act(async () => {
+      fireEvent.change(shape, { target: { value: "delegate-only" } });
+    });
+    await flush();
+    expect(rpc.calls.filter((call) => call.method === "set_scope_setting").at(-1)?.input).toEqual({
+      projectId: null,
+      key: "contractPreset",
+      value: "delegate-only",
+    });
+  });
+
+  it("keeps the new-thread default global, and out of a project's scope", async () => {
+    const rpc = makeSettingsRpc();
+    const slot = mountSettings(rpc);
+    await flush();
+
+    await click(within(slot.container).getByRole("button", { name: "On" }));
+    expect(rpc.calls.filter((call) => call.method === "set_default").at(-1)?.input).toEqual({ enabled: true });
+
+    // A project has no such setting: it is a composer default, not thread behaviour.
+    const selector = within(slot.container).getByLabelText("Scope") as HTMLSelectElement;
+    await act(async () => {
+      fireEvent.change(selector, { target: { value: "proj_alpha" } });
+    });
+    await flush();
+    expect(within(slot.container).queryByText("Start new threads as orchestrators")).toBeNull();
+  });
+
+  it("scopes the section to a project, and writes the override there", async () => {
+    const rpc = makeSettingsRpc();
+    const slot = mountSettings(rpc);
+    await flush();
+
+    // Global by default: the project RPCs are untouched.
+    expect(rpc.calls.some((call) => call.method === "get_project_worker")).toBe(false);
+    const selector = within(slot.container).getByLabelText("Scope") as HTMLSelectElement;
+    expect(Array.from(selector.options, (option) => option.textContent)).toEqual(["Global", "Alpha", "Beta"]);
+
+    await act(async () => {
+      fireEvent.change(selector, { target: { value: "proj_alpha" } });
+    });
+    await flush();
+    expect(rpc.inputsOf("get_project_worker")).toContainEqual({ projectId: "proj_alpha" });
+
+    // A settings row writes one field for the project, and Inherit clears it again.
+    const enforcement = within(slot.container).getByLabelText("Enforcement") as HTMLSelectElement;
+    expect(Array.from(enforcement.options, (option) => option.textContent)).toEqual([
+      "Inherit (guard)",
+      "instruct",
+      "block",
+    ]);
+    await act(async () => {
+      fireEvent.change(enforcement, { target: { value: "block" } });
+    });
+    await flush();
+    expect(rpc.calls.filter((call) => call.method === "set_scope_setting").at(-1)?.input).toEqual({
+      projectId: "proj_alpha",
+      key: "enforcement",
+      value: "block",
+    });
+
+    // The select's first option is the inherit affordance for an enum row.
+    await act(async () => {
+      fireEvent.change(within(slot.container).getByLabelText("Enforcement"), { target: { value: "" } });
+    });
+    await flush();
+    expect(rpc.calls.filter((call) => call.method === "set_scope_setting").at(-1)?.input).toEqual({
+      projectId: "proj_alpha",
+      key: "enforcement",
+      value: null,
+    });
+  });
+
+  it("clears a project's worker execution when Inherit is pressed in project scope", async () => {
+    const rpc = makeSettingsRpc({ providerId: "command-code", model: "model-a" });
+    const slot = mountSettings(rpc);
+    await flush();
+    const selector = within(slot.container).getByLabelText("Scope") as HTMLSelectElement;
+    await act(async () => {
+      fireEvent.change(selector, { target: { value: "proj_beta" } });
+    });
+    await flush();
+
+    // Custom stores a project execution; Inherit then hands it back to the global one.
+    await click(within(slot.container).getByRole("button", { name: "Custom" }));
+    expect(rpc.calls.filter((call) => call.method === "set_project_worker").at(-1)?.input).toMatchObject({
+      projectId: "proj_beta",
+    });
+    await click(within(slot.container).getByRole("button", { name: "Inherit" }));
+    expect(rpc.calls.filter((call) => call.method === "set_project_worker").at(-1)?.input).toEqual({
+      projectId: "proj_beta",
+      config: null,
+    });
   });
 });
