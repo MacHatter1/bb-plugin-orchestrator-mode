@@ -6,6 +6,8 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ## Unreleased
 
+## 0.1.2 - 2026-10-06
+
 ### Changed
 
 - The settings section is scoped end to end. **Settings → Installed plugins →
