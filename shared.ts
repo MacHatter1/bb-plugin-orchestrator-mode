@@ -170,7 +170,7 @@ const ALWAYS_ALLOWED: ReadonlySet<string> = new Set([
 ]);
 
 /** Shell metacharacters that split one command line into separate commands. */
-const COMMAND_SEPARATORS = /(?:&&|\|\||[;|\n\r])/;
+const COMMAND_SEPARATORS = /(?:&&|\|\||[;|&\n\r])/;
 
 /** Leading `FOO=bar` environment assignments before the actual program. */
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -323,32 +323,58 @@ const MUTATING_SKILL_VERBS: ReadonlySet<string> = new Set(["update", "remove", "
 const HELP_OR_VERSION = /(?:^|\s)(?:--help|-h|--version)(?:\s|=|$)/;
 
 /**
- * True when every command in a shell line only reads. Any redirect, any
- * unknown program, and any mutating `git`/`bb` subcommand makes it work.
+ * True when every command in a shell line only reads. Output redirects count
+ * as work except literal stderr suppression with `2>/dev/null`.
  */
 export function isReadOnlyCommand(command: string): boolean {
-  const trimmed = command.trim();
+  // Match the complete literal target, not /dev/null-output, a glob, or an
+  // expanded/concatenated filename. Everything else keeps the redirect veto.
+  const trimmed = command.trim().replace(
+    /(^|[\s;|&])2>[ \t]*\/dev\/null(?=$|[\s;|&])/g,
+    "$1",
+  );
   if (trimmed === "") return true;
-  // A redirect writes, whatever the program is.
   if (/(^|[^>])>(?!&)/.test(trimmed) || />>/.test(trimmed)) return false;
   if (/\btee\b/.test(trimmed)) return false;
   // Command substitution can hide anything.
-  if (/\$\(|`/.test(trimmed)) return false;
+  if (/\$\(|`|[<>]\(/.test(trimmed)) return false;
 
   const segments = trimmed.split(COMMAND_SEPARATORS);
   return segments.every((segment) => isReadOnlySegment(segment.trim()));
 }
 
+const FIND_WORK_ACTIONS: ReadonlySet<string> = new Set([
+  "-delete", "-exec", "-execdir", "-ok", "-okdir",
+  "-fprint", "-fprint0", "-fprintf", "-fls",
+]);
+
+/** Options whose next word is a literal pattern/format, not a find action. */
+const FIND_PATTERN_OPTIONS: ReadonlySet<string> = new Set([
+  "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename",
+  "-lname", "-ilname", "-regex", "-iregex", "-printf",
+]);
+
 function isReadOnlySegment(segment: string): boolean {
   if (segment === "") return true;
-  // `foo --help`, `foo -h` and `foo --version` report; they never mutate.
-  if (HELP_OR_VERSION.test(segment)) return true;
   const tokens = segment.split(/\s+/);
   let index = 0;
   while (index < tokens.length && ENV_ASSIGNMENT.test(tokens[index]!)) index += 1;
   const program = tokens[index];
   if (program === undefined) return true;
   const name = program.replace(/^.*\//, "");
+  if (name === "find") {
+    // Keep quoted patterns together, and recognise quoted/escaped action
+    // flags too. Suppressing errors never makes delete/exec/file-output safe.
+    const words = segment.match(/(?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[^\s'"\\])+/g) ?? [];
+    const args = words.slice(index + 1).map((word) => word.replace(/['"\\]/g, ""));
+    for (let arg = 0; arg < args.length; arg += 1) {
+      if (FIND_WORK_ACTIONS.has(args[arg]!)) return false;
+      if (FIND_PATTERN_OPTIONS.has(args[arg]!)) arg += 1;
+    }
+    return true;
+  }
+  // `foo --help`, `foo -h` and `foo --version` report; they never mutate.
+  if (HELP_OR_VERSION.test(segment)) return true;
   if (name === "git") return isReadOnlyGitSegment(tokens.slice(index + 1));
   if (name === "bb") return isReadOnlyBbSegment(tokens.slice(index + 1));
   return READ_ONLY_PROGRAMS.has(name);
@@ -497,7 +523,7 @@ export function buildInstructions(input: InstructionInput): string {
         : "A watchdog reads your timeline and STOPS the turn the moment you do direct work. Work you did yourself is thrown away.";
 
   const commands = input.allowReadCommands
-    ? "Read-only shell commands (`ls`, `cat`, `rg`, `git status`, `git diff`, `git log`, `find`, `wc`, `bb status`, `bb provider list`, `bb provider models`) are allowed so you can orient yourself. Anything that writes, builds, installs, commits or otherwise changes state is not."
+    ? "Read-only shell commands (`ls`, `cat`, `rg`, `git status`, `git diff`, `git log`, `find`, `wc`, `bb status`, `bb provider list`, `bb provider models`) are allowed so you can orient yourself. Literal stderr suppression (`2>/dev/null`) is allowed; other output redirects count as work. Anything that writes, builds, installs, commits or otherwise changes state is not."
     : "Only CLI delegation commands may run; read-only shell exploration is disabled.";
 
   const reminders =

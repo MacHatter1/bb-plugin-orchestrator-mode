@@ -158,7 +158,9 @@ flowchart TD
 - **Classification.** The watchdog treats file changes, image generation,
   mutating commands and mutating tool names as work. Reads, searches, plans,
   questions and delegation
-  remain available; command leniency is configurable.
+  remain available; command leniency is configurable. Read-only queries may
+  suppress stderr with `2>/dev/null`; output-file redirects and mutating `find`
+  actions still count as work.
 - **Session timing.** Running turns receive mode changes as steering messages.
   Session configuration applies when the provider session is next constructed;
   resuming can retain its original tools, so CLI delegation remains available.

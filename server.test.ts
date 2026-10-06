@@ -501,6 +501,7 @@ describe("the watchdog", () => {
   it.each([
     "git status",
     "bb status --json; bb provider models codex --environment env_bucd4j3r9b --json",
+    "find benchmarks -maxdepth 2 -type f 2>/dev/null; find research/sqlite -maxdepth 2 -type f 2>/dev/null",
   ])("lets read-only command `%s` through", async (command) => {
     const { harness } = await load({ enforcement: "block", allowReadCommands: true });
     await arm(harness);

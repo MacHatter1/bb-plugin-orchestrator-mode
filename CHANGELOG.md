@@ -8,6 +8,9 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ### Fixed
 
+- Allow literal `2>/dev/null` stderr suppression on read-only commands without
+  flagging exploratory `find` queries, while rejecting file-output redirects
+  and mutating `find` actions.
 - Allow explicit provider/model pins in the delegation tool and CLI before
   workers start, so provider-constrained personas can keep orchestrator mode on.
 

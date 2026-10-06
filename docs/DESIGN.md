@@ -53,8 +53,12 @@ their names; this is a heuristic, not a complete description of their effects.
 
 Recognised research includes reads, searches, web fetches, plans and questions.
 Delegation rows remain available. Shell read-only checks reject writes through
-redirection and mutating command chains; consult `isReadOnlyCommand` and its
-tests for the exact recognised commands.
+redirection and mutating command chains. Literal stderr suppression with
+`2>/dev/null` (or `2> /dev/null`) is allowed when every command only reads;
+other output redirects still count as work. `find` actions that delete,
+execute programs, or write result files also count as work, even with errors
+suppressed. Consult `isReadOnlyCommand` and its tests for the exact recognised
+commands.
 Mixed Git subcommands require recognised query forms: listing branches or
 tags, inspecting remotes and showing reflogs. Creating or deleting branches
 and tags, changing remotes and rewriting reflogs count as work.

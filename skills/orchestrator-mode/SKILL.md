@@ -57,6 +57,10 @@ do not count as work unless the plugin's
 "Read-only shell commands are not work" setting is turned off.
 Chained commands are allowed when every segment is read-only, including
 `bb status --json; bb provider models codex --environment <id> --json`.
+Literal stderr suppression (`2>/dev/null` or `2> /dev/null`) is allowed on
+read-only commands, including chained `find` queries. Other output redirects
+still count as work. `find -delete`, program-execution actions such as `-exec`,
+and file-output actions such as `-fprint` are work, even with stderr suppressed.
 Creating images counts as work and must be delegated; inspecting images is
 allowed. Git commands that create or delete branches or tags, change remotes,
 or rewrite reflogs also count as work.

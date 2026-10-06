@@ -89,6 +89,17 @@ describe("read-only command detection", () => {
     "git diff --stat",
     "git log --oneline -20",
     "find . -name '*.ts'",
+    "find benchmarks -maxdepth 2 -type f 2>/dev/null",
+    "find benchmarks 2>/dev/null",
+    "find benchmarks 2> /dev/null",
+    "2>/dev/null find benchmarks",
+    "find benchmarks 2>/dev/null;find research/sqlite 2>/dev/null",
+    "find benchmarks 2>/dev/null && ls research",
+    "find benchmarks 2>/dev/null | head -20",
+    "find benchmarks -name '-delete' 2>/dev/null",
+    "find benchmarks -name 'file -delete' 2>/dev/null",
+    "find benchmarks -printf '-delete' 2>/dev/null",
+    "find benchmarks -maxdepth 2 -type f 2>/dev/null; find research/sqlite -maxdepth 2 -type f 2>/dev/null",
     "wc -l src/*.ts",
     "pwd",
     "jq '.name' package.json",
@@ -138,6 +149,38 @@ describe("read-only command detection", () => {
     "git push",
     "echo hi > out.txt",
     "cat a >> b",
+    "find benchmarks 2> errors.log",
+    "find benchmarks 2>> errors.log",
+    "find benchmarks 2>/dev/null > files.txt",
+    "find benchmarks > /dev/null 2> errors.log",
+    "find benchmarks 2>/dev/null-output",
+    "find benchmarks 2>/dev/null/../out.txt",
+    "find benchmarks 2>/dev/null*",
+    "find benchmarks 2>/dev/null\"-output\"",
+    "find benchmarks 2>/dev/null$OUTPUT_SUFFIX",
+    "find benchmarks 2>/dev/null; rm file.txt",
+    "find benchmarks 2>/dev/null && npm test",
+    "find benchmarks 2>/dev/null & rm file.txt",
+    "find benchmarks 2>/dev/null&rm file.txt",
+    "find benchmarks -delete 2>/dev/null",
+    "find benchmarks '-delete' 2>/dev/null",
+    "find benchmarks -de'le'te 2>/dev/null",
+    "find benchmarks -dele\\te 2>/dev/null",
+    "find benchmarks -exec touch out.txt --help \\; 2>/dev/null",
+    "find benchmarks -exec touch out.txt \\; 2>/dev/null",
+    "find benchmarks -execdir touch out.txt \\; 2>/dev/null",
+    "find benchmarks -ok touch out.txt \\; 2>/dev/null",
+    "find benchmarks -okdir touch out.txt \\; 2>/dev/null",
+    "find benchmarks -fprint files.txt 2>/dev/null",
+    "find benchmarks -fprint0 files.txt 2>/dev/null",
+    "find benchmarks -fprintf files.txt '%p' 2>/dev/null",
+    "find benchmarks -fls files.txt 2>/dev/null",
+    "npm test 2>/dev/null",
+    "ls $(touch out.txt) 2>/dev/null",
+    "cat <(touch out.txt) 2>/dev/null",
+    "cat >(touch out.txt) 2>/dev/null",
+    "find benchmarks 2>'errors 2>/dev/null suffix'",
+    "find benchmarks 2>\"errors 2>/dev/null suffix\"",
     "ls | tee out.txt",
     "make",
     "pytest",
@@ -193,6 +236,14 @@ describe("direct-work classification", () => {
 
   it("allows a read-only command by default", () => {
     expect(classifyRow(row({ id: "r3", workKind: "command", command: "git status" }))).toBeNull();
+  });
+
+  it("allows exploratory find commands that suppress stderr", () => {
+    const command = "find benchmarks -maxdepth 2 -type f 2>/dev/null; find research/sqlite -maxdepth 2 -type f 2>/dev/null";
+    expect(classifyRow(row({ id: "find-with-stderr", workKind: "command", command }))).toBeNull();
+    expect(classifyRow(row({ id: "find-with-stderr", workKind: "command", command }), {
+      allowReadCommands: false,
+    })).not.toBeNull();
   });
 
   it("flags Git commands that mutate branches, tags or remotes", () => {
@@ -273,6 +324,12 @@ describe("the contract", () => {
     expect(text).toContain("orchestrator_delegate");
     expect(text).toContain("ORCHESTRATOR MODE IS ON");
     expect(text.toLowerCase()).toContain("editing");
+  });
+
+  it("documents the stderr-suppression exception", () => {
+    const text = buildInstructions({ enforcement: "guard", allowReadCommands: true });
+    expect(text).toContain("2>/dev/null");
+    expect(text).toContain("other output redirects count as work");
   });
 
   it("explains how to pin workers without disabling the mode", () => {
