@@ -8,6 +8,8 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ### Fixed
 
+- Treat `bb thread tell`/`message` follow-ups to recorded workers as delegation,
+  including literal quoted stdin heredocs, without allowing local shell work.
 - Allow literal `2>/dev/null` stderr suppression on read-only commands without
   flagging exploratory `find` queries, while rejecting file-output redirects
   and mutating `find` actions.

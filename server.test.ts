@@ -520,6 +520,68 @@ describe("the watchdog", () => {
     expect(sentTexts).toEqual([]);
   });
 
+  it("allows stdin follow-ups to recorded workers with read-only exploration disabled", async () => {
+    const { harness } = await load({ enforcement: "block", allowReadCommands: false });
+    await arm(harness);
+    await harness.behavior.callAgentTool(
+      DELEGATE_TOOL, { task: "Review the implementation", waitForResult: false },
+      { threadId: THREAD, projectId: "proj_1" },
+    );
+    const command = `bb thread tell ${WORKER} --model grok-4.7 --mode steer --message-file - <<'FOLLOWUP'\nAdd tests and run them in the worker.\nFOLLOWUP`;
+    timelineRows = [
+      ...timelineRows,
+      workRow({ id: "row_followup", workKind: "command", turnId: "turn_2", sourceSeqStart: 3, sourceSeqEnd: 4, command }),
+    ];
+    timelineMaxSeq = 4;
+    await idle(harness);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(await harness.behavior.callRpc("get_state", { threadId: THREAD })).toMatchObject({
+      violations: [], delegations: [{ threadId: WORKER }],
+    });
+    expect(stoppedThreads).toEqual([]);
+    expect(sentTexts).toEqual([]);
+  });
+
+  it("recognises workers recorded while the timeline request is in flight", async () => {
+    const { harness } = await load({ enforcement: "block", allowReadCommands: false });
+    await arm(harness);
+    const command = `bb thread tell ${WORKER} 'Add tests'`;
+    timelineRows = [
+      ...timelineRows,
+      workRow({ id: "row_concurrent_followup", workKind: "command", turnId: "turn_2", sourceSeqStart: 3, sourceSeqEnd: 4, command }),
+    ];
+    timelineMaxSeq = 4;
+    harness.inspection.sdk.stub("threads.timeline", async () => {
+      await harness.behavior.callAgentTool(
+        DELEGATE_TOOL, { task: "Review the implementation", waitForResult: false },
+        { threadId: THREAD, projectId: "proj_1" },
+      );
+      return { rows: timelineRows, maxSeq: timelineMaxSeq };
+    });
+    await idle(harness);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(await harness.behavior.callRpc("get_state", { threadId: THREAD })).toMatchObject({
+      violations: [], delegations: [{ threadId: WORKER }],
+    });
+    expect(stoppedThreads).toEqual([]);
+    expect(sentTexts).toEqual([]);
+  });
+
+  it("still flags follow-up commands to unrecorded threads", async () => {
+    const { harness } = await load({ enforcement: "block" });
+    await arm(harness);
+    timelineRows = [
+      ...timelineRows,
+      workRow({ id: "row_unrecorded", workKind: "command", turnId: "turn_2", sourceSeqStart: 3, sourceSeqEnd: 4, command: "bb thread tell th_other 'Do work'" }),
+    ];
+    timelineMaxSeq = 4;
+    await idle(harness);
+    await vi.waitFor(() => expect(stoppedThreads).toEqual([THREAD]));
+    expect(await harness.behavior.callRpc("get_state", { threadId: THREAD })).toMatchObject({
+      violations: [{ id: "row_unrecorded" }],
+    });
+  });
+
   it("never classifies the same row twice", async () => {
     const { harness } = await load({ enforcement: "guard" });
     await arm(harness);

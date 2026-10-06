@@ -95,6 +95,25 @@ A resumed session may retain an older native tool schema without the pin
 arguments. In that case, use the CLI route with `--provider` and `--model`
 rather than attempting unpinned delegation.
 
+### Following up with a worker
+
+`bb thread tell <worker-id> ...` (alias `message`) counts as delegation when
+the target is in this orchestrator's retained delegation records. It remains
+allowed when read-only shell exploration is disabled. Literal quoted messages
+and `--message-file <path>` can carry the follow-up. For stdin, use a quoted
+heredoc delimiter so the shell cannot execute substitutions in the message:
+
+```sh
+bb thread tell <worker-id> --model <model-id> --mode steer --message-file - <<'FOLLOWUP'
+Review the implementation and add the missing tests in your worker thread.
+FOLLOWUP
+```
+
+Unknown/unrecorded targets (including the orchestrator itself), unquoted
+heredocs, command substitutions outside literal message data, file-output
+redirects and mixed chains doing local work are not delegation. Each worker
+in a chained follow-up must be recorded. At most 50 worker records are retained.
+
 The default corrective-message cap is three per enablement. Recording and
 block-mode stops continue after the cap. Clearing violations or disabling the
 thread resets correction counters.

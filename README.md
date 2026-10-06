@@ -79,6 +79,8 @@ brief and can wait for its result. Workers use the parent's environment and
 appear in the sidebar unless you request a hidden worker. Optional `providerId`
 and `model` pins are applied before the worker starts.
 Existing sessions without that tool can use `bb orchestrator-mode delegate`.
+Follow-ups with `bb thread tell <worker-id>` (alias `message`) are delegation
+for recorded workers, including messages supplied through quoted stdin heredocs.
 
 </td>
 </tr>

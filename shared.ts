@@ -138,10 +138,13 @@ export interface Violation {
 export interface ClassifierOptions {
   /** Read-only shell commands are research, not work. Default true. */
   allowReadCommands: boolean;
+  /** Retained worker IDs recorded by this orchestrator's delegation handler. */
+  workerThreadIds: readonly string[];
 }
 
 const DEFAULT_CLASSIFIER_OPTIONS: ClassifierOptions = {
   allowReadCommands: true,
+  workerThreadIds: [],
 };
 
 /**
@@ -395,9 +398,42 @@ function isReadOnlyBbSegment(rest: readonly string[]): boolean {
   return verb !== undefined && verbs.has(verb);
 }
 
+/** Only an explicit, recorded worker target makes a follow-up delegation. */
+function isWorkerFollowup(segment: string, workerThreadIds: readonly string[]): boolean {
+  const match = /^(?:\S*\/)?bb\s+thread\s+(?:tell|message)\s+(?:'([A-Za-z0-9_-]+)'|"([A-Za-z0-9_-]+)"|([A-Za-z0-9_-]+))(?=\s|$)/.exec(segment);
+  const target = match?.[1] ?? match?.[2] ?? match?.[3];
+  return target !== undefined && workerThreadIds.includes(target);
+}
+
+/** End of a quoted, non-expanding heredoc; null for unsupported/unfinished input. */
+function literalHeredocEnd(command: string, offset: number): number | null {
+  const header = /^<<(-?)(?:'([A-Za-z0-9_-]+)'|"([A-Za-z0-9_-]+)")[ \t]*\r?\n/.exec(command.slice(offset));
+  if (header === null) return null;
+  const delimiter = header[2] ?? header[3]!;
+  const stripTabs = header[1] === "-";
+  let start = offset + header[0].length;
+  while (start <= command.length) {
+    const newline = command.indexOf("\n", start);
+    const end = newline === -1 ? command.length : newline;
+    let line = command.slice(start, end).replace(/\r$/, "");
+    if (stripTabs) line = line.replace(/^\t+/, "");
+    if (line === delimiter) return end;
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  return null;
+}
+
 /** CLI delegation is permitted even in sessions without the native tool. */
-function isDelegationCommand(command: string, allowReadCommands: boolean): boolean {
-  // ponytail: ordinary shell quoting only; use a shell parser if expansion forms are needed.
+function isDelegationCommand(
+  command: string,
+  allowReadCommands: boolean,
+  workerThreadIds: readonly string[],
+): boolean {
+  // Ordinary shell quoting only; quoted heredoc bodies are literal message data.
+  const delegates = (part: string) =>
+    /^(?:\S*\/)?bb\s+orchestrator-mode\s+delegate(?:\s|$)/.test(part) ||
+    isWorkerFollowup(part, workerThreadIds);
   const segments: string[] = [];
   let segment = "";
   let quote: "'" | '"' | null = null;
@@ -424,6 +460,13 @@ function isDelegationCommand(command: string, allowReadCommands: boolean): boole
     } else if (char === "'" || char === '"') {
       segment += char;
       quote = char;
+    } else if (char === "<" && command[index + 1] === "<") {
+      if (!isWorkerFollowup(segment.trim(), workerThreadIds)) return false;
+      const end = literalHeredocEnd(command, index);
+      if (end === null) return false;
+      segments.push(segment.trim());
+      segment = "";
+      index = end;
     } else if (/[<>()]/.test(char)) {
       return false;
     } else if (char === "&" && command[index + 1] !== "&") {
@@ -438,7 +481,6 @@ function isDelegationCommand(command: string, allowReadCommands: boolean): boole
   }
   if (quote !== null || escaped) return false;
   segments.push(segment.trim());
-  const delegates = (part: string) => /^(?:\S*\/)?bb\s+orchestrator-mode\s+delegate(?:\s|$)/.test(part);
   return segments.some(delegates) && segments.every((part) =>
     part === "" || delegates(part) || (allowReadCommands && isReadOnlyCommand(part)),
   );
@@ -452,7 +494,7 @@ export function classifyRow(
   row: WorkRowLike & { id: string; turnId?: string | null },
   options: Partial<ClassifierOptions> = {},
 ): Violation | null {
-  const { allowReadCommands } = { ...DEFAULT_CLASSIFIER_OPTIONS, ...options };
+  const { allowReadCommands, workerThreadIds = [] } = { ...DEFAULT_CLASSIFIER_OPTIONS, ...options };
   if (row.kind !== "work") return null;
   const workKind = row.workKind ?? "";
   if (ALWAYS_ALLOWED.has(workKind)) return null;
@@ -475,7 +517,7 @@ export function classifyRow(
 
   if (workKind === "command") {
     const command = (row.command ?? "").trim();
-    if (isDelegationCommand(command, allowReadCommands)) return null;
+    if (isDelegationCommand(command, allowReadCommands, workerThreadIds)) return null;
     if (allowReadCommands && command !== "" && isReadOnlyCommand(command)) {
       return null;
     }
@@ -569,8 +611,9 @@ ${commands}
    tool, or \`--provider <id> --model <id>\` to the CLI. Use registered provider
    and model IDs; pinning does not require turning this mode off.
    Resuming a provider session may retain its original tool list.
-4. Review what comes back. If a result is wrong or incomplete, send a follow-up
-   to a worker — never patch it yourself.
+4. Review what comes back. Send corrections to recorded workers with
+   \`bb thread tell <worker-id> ...\` (alias \`message\`); safely quoted messages
+   or quoted stdin heredocs are delegation. Never patch the work yourself.
 5. Report by synthesizing: what was delegated, what each worker produced, what
    is left. Link worker threads by id so the user can open them.
 

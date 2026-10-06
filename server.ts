@@ -775,6 +775,8 @@ export default async function plugin(bb: BbPluginApi) {
     // Incremental responses carry row patches instead of full rows. Nested
     // rows keep work visible after a completed turn collapses to a summary.
     const rows = asScanRows(timeline.delta?.upsertRows ?? timeline.rows);
+    // A worker may have been recorded while the timeline request was in flight.
+    const workerThreadIds = (await getState(threadId))?.delegations.map((worker) => worker.threadId) ?? [];
     const enabledAtMs = state.enabledAt === null ? 0 : Date.parse(state.enabledAt);
     let maxSeq = Math.max(state.lastSeq, timeline.maxSeq);
     const graceTurnIds = [...state.graceTurnIds];
@@ -797,7 +799,9 @@ export default async function plugin(bb: BbPluginApi) {
       // Turns that ran before the session could gain the contract are never
       // judged — only recorded.
       if (turnId !== null && graceTurnIds.includes(turnId)) continue;
-      const violation = classifyRow(row, { allowReadCommands: live.allowReadCommands });
+      const violation = classifyRow(row, {
+        allowReadCommands: live.allowReadCommands, workerThreadIds,
+      });
       if (violation !== null) fresh.push(violation);
     }
 

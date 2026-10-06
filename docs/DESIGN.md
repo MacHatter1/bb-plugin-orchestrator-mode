@@ -47,7 +47,13 @@ and request nested rows so completed turn summaries still expose their work.
 File changes and image generation count as work. Command rows count unless they
 delegate through the plugin CLI or the read-only command setting allows them.
 Delegation command checks respect quoted briefs and reject executable
-substitutions, redirections and mixed chains that perform direct work.
+substitutions, output redirections and mixed chains that perform direct work.
+Worker follow-ups through `bb thread tell`/`message` are delegation only when
+the literal target ID is in this parent's retained delegation records, even
+when read-only exploration is disabled. The watchdog refreshes that worker
+list after reading the timeline so newly recorded workers are included.
+Quoted stdin heredocs (including tab-stripping `<<-`) are read as literal
+message data; unquoted, unfinished or unsupported heredocs remain work.
 Generic tool rows are classified using
 their names; this is a heuristic, not a complete description of their effects.
 

@@ -381,6 +381,73 @@ describe("the contract", () => {
     );
   });
 
+  it("documents worker follow-up messaging", () => {
+    const text = buildInstructions({ enforcement: "guard", allowReadCommands: true });
+    expect(text).toContain("bb thread tell <worker-id>");
+    expect(text).toContain("quoted stdin heredocs are delegation");
+  });
+
+  it.each(["thr_z5wtd7fibg", "thr_3fuxqgieyy"])(
+    "allows worker follow-up messaging to %s as delegation",
+    (threadId) => {
+      const command = `bb thread tell ${threadId} --model grok-4.7 --mode steer --message-file -`;
+      expect(isReadOnlyCommand(command)).toBe(false);
+      expect(classifyRow(row({ id: threadId, workKind: "command", command }), {
+        allowReadCommands: false,
+        workerThreadIds: ["thr_z5wtd7fibg", "thr_3fuxqgieyy"],
+      })).toBeNull();
+    },
+  );
+
+  it.each([
+    "bb thread tell thr_worker 'Review the implementation and add tests'",
+    "bb thread message thr_worker --message-file followup.md",
+    "bb thread tell 'thr_worker' --mode queue 'Add tests'",
+    "bb thread tell \"thr_worker\" --mode auto 'Add tests'",
+    "/usr/local/bin/bb thread tell thr_worker 'Add tests'",
+    "bb thread tell thr_worker 'Use `npm test` and $(example) as literal text'",
+    "bb thread tell thr_worker --message-file - <<'FOLLOWUP'\nAdd tests; do not change the contract.\nRun `npm test` and $(example) in the worker, not here.\nFOLLOWUP",
+    "bb thread tell thr_worker --message-file - <<\"FOLLOWUP\"\nAdd tests > 3 cases.\nFOLLOWUP\n",
+    "bb thread tell thr_worker --message-file - <<-'FOLLOWUP'\n\tAdd tests\n\tFOLLOWUP",
+    "bb thread tell thr_worker 'First task'; bb thread tell thr_worker2 'Second task'",
+  ])("allows recorded-worker follow-up: %s", (command) => {
+    expect(classifyRow(row({ id: "followup", workKind: "command", command }), {
+      allowReadCommands: false,
+      workerThreadIds: ["thr_worker", "thr_worker2"],
+    })).toBeNull();
+  });
+
+  it.each([
+    "bb thread tell thr_unknown 'Do work'",
+    "bb thread tell thr_parent 'Disable the mode'",
+    "bb thread tell thr_worker 'Add tests'; npm test",
+    "bb thread tell thr_worker 'Add tests' > output.txt",
+    "bb thread tell thr_worker 'Add tests' & npm test",
+    'bb thread tell thr_worker "$(npm test)"',
+    "bb thread tell thr_worker `npm test`",
+    "bb thread tell thr_worker --message-file <(npm test)",
+    "bb thread tell thr_worker --message-file - <<FOLLOWUP\n$(npm test)\nFOLLOWUP",
+    "bb thread tell thr_worker --message-file - <<'FOLLOWUP'\nAdd tests\nFOLLOWUP\nnpm test",
+    "bb thread tell thr_worker --message-file - <<'FOLLOWUP'; npm test\nAdd tests\nFOLLOWUP",
+    "bb thread tell thr_worker --message-file - <<'FOLLOWUP'\nAdd tests\nFOLLOWUP extra",
+    "bb thread tell thr_worker --message-file - <<'FOLLOWUP'\nNo closing delimiter",
+    'bb thread tell thr_worker "message <<\'FOLLOWUP\'\n$(npm test)\nFOLLOWUP\n"',
+    "cat <<'FOLLOWUP'\ntext\nFOLLOWUP",
+  ])("rejects unsafe or unrecorded-worker follow-up: %s", (command) => {
+    expect(classifyRow(row({ id: "followup", workKind: "command", command }), {
+      workerThreadIds: ["thr_worker", "thr_worker2"],
+    })).not.toBeNull();
+  });
+
+  it("allows read-only checks around worker messages only when exploration is enabled", () => {
+    const command = "bb status --json; bb thread tell thr_worker 'Add tests'";
+    const work = row({ id: "followup", workKind: "command", command });
+    expect(classifyRow(work, { workerThreadIds: ["thr_worker"] })).toBeNull();
+    expect(classifyRow(work, {
+      workerThreadIds: ["thr_worker"], allowReadCommands: false,
+    })).not.toBeNull();
+  });
+
   it("allows CLI delegation even when read-only exploration is disabled", () => {
     for (const command of [
       "bb orchestrator-mode delegate --task 'Implement retries; add tests > 3 cases'",
