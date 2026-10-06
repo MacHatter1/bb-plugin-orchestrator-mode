@@ -527,6 +527,12 @@ bb plugin enable orchestrator-mode
 
 </details>
 
+## Release notes
+
+See the [0.1.2 release notes](docs/releases/0.1.2.md) for the worker controls,
+watchdog fixes, upgrade guidance and contributor acknowledgements, and the
+[changelog](CHANGELOG.md) for version history.
+
 ## Development
 
 ```sh
