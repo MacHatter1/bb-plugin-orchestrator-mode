@@ -6,6 +6,8 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ## Unreleased
 
+## 0.1.3 - 2026-10-07
+
 ### Fixed
 
 - Remove the draft-text decoration that drew a stray edge inside the composer
