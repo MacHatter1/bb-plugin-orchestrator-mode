@@ -38,8 +38,11 @@ Session configuration is refreshed when the provider session is next
 constructed, but resuming may retain its original tool list.
 
 Direct messages from child threads queue by default until the orchestrator's
-current turn ends. BB retains their content and sender and releases messages
-as the orchestrator becomes idle. BB requires one sender per queued group,
+current turn ends. BB retains their content and sender. Compatible queued
+updates from one child arrive together, preserving every update and its order.
+Interleaved children are batched in order of their first pending update. Matching
+execution settings are required; user messages, other waits and existing groups
+can prevent batching across a boundary. BB requires one sender per queued group,
 so reports from different children remain separate dispatches. Send now overrides the hold. The
 `childMessageDelivery` scope setting selects `queued` or `immediate`; use
 `--inherit childMessageDelivery` to clear a project's override. User messages,

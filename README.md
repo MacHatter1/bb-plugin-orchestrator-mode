@@ -280,7 +280,10 @@ the project default when delegating to `acp-omp`.
 With orchestrator mode on, direct messages from child threads wait in BB's
 persistent queue while the orchestrator is working. When its turn ends, BB
 rechecks the queue and releases waiting messages as the orchestrator becomes
-idle. Messages to an idle orchestrator
+idle. Compatible pending updates from the same child arrive together in one
+turn, with every message preserved in that child's original order. If updates
+from several children are interleaved, the earliest child's pending updates
+are brought together first, then the next child's. Messages to an idle orchestrator
 arrive immediately. User messages and messages from unrelated threads are
 not held by this policy.
 
@@ -304,7 +307,11 @@ plugin dispatch hook. Those notices keep BB's own delivery behavior; extending
 this policy to them requires support in BB core. BB also requires queued groups
 to share a sender, so combining reports from several children into one dispatch
 requires a core change. This setting controls when messages are delivered;
-it preserves BB's queue order and existing groups. Results returned by a waiting
+same-child batching requires matching model, reasoning, permissions and service
+tier. User messages, unrelated senders, scheduled messages and other plugins'
+holds form queue boundaries. Existing groups outside the batch are preserved;
+BB's grouping API can prevent automatic batching while such a group remains
+queued. Results returned by a waiting
 `orchestrator_delegate` call also return directly through that tool.
 
 ### Verdicts and verification

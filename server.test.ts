@@ -11,9 +11,58 @@ import type { BbPluginApi, PluginSettingValue } from "@get-bb/plugin-sdk";
 import { REVIEW_TOOL } from "./shared";
 import plugin, { DELEGATE_TOOL, MAX_STATE_BYTES, type OrchestratorStateDto } from "./server";
 import { writeMirror } from "./shared";
+import { CHILD_BATCH_WAIT_REASON } from "./child-message-queue";
 
 const THREAD = "th_orchestrator";
 const WORKER = "th_worker";
+type QueueEntry = ReturnType<typeof makeQueueEntry>;
+
+function childEntry(id: string, senderThreadId = WORKER, overrides: Partial<QueueEntry> = {}): QueueEntry {
+  return makeQueueEntry({
+    id, threadId: THREAD, initiator: "agent", senderThreadId,
+    content: [{ type: "text", text: `Full content of ${id}`, mentions: [] }],
+    waitingOn: { kind: "plugin", pluginId: "orchestrator-mode", reason: "Waiting for the turn to finish" },
+    ...overrides,
+  });
+}
+
+/** Native queue contract: mutations touch ordering/group edges, never content. */
+function queueFixture(harness: FakePluginHarness, initial: QueueEntry[]) {
+  const queue = { entries: structuredClone(initial) };
+  const snapshot = () => structuredClone(queue.entries);
+  harness.inspection.sdk.stub("threads.queuedMessages.list", async () => snapshot());
+  const reorder = vi.fn(async ({ queuedMessageId, previousQueuedMessageId, nextQueuedMessageId }) => {
+    const index = queue.entries.findIndex((entry) => entry.id === queuedMessageId);
+    const previous = queue.entries.findIndex((entry) => entry.id === previousQueuedMessageId);
+    const next = queue.entries.findIndex((entry) => entry.id === nextQueuedMessageId);
+    if (index < 0 || previous < 0 || next < 0 || previous >= next) throw new Error("stale neighbor");
+    const [entry] = queue.entries.splice(index, 1);
+    queue.entries.splice(queue.entries.findIndex((entry) => entry.id === nextQueuedMessageId), 0, entry!);
+    return snapshot();
+  });
+  const group = vi.fn(async ({ expectedGroupedPrefixQueuedMessageIds, groupBoundaryQueuedMessageId }) => {
+    const index = queue.entries.findIndex((entry) => entry.id === groupBoundaryQueuedMessageId);
+    const prefix = queue.entries.slice(0, index + 1);
+    if (index < 0 || JSON.stringify(prefix.map((entry) => entry.id)) !==
+      JSON.stringify(expectedGroupedPrefixQueuedMessageIds)) throw new Error("stale prefix");
+    const first = prefix[0]!;
+    if (prefix.some((entry) => entry.senderThreadId !== first.senderThreadId || entry.model !== first.model ||
+      entry.reasoningLevel !== first.reasoningLevel || entry.permissionMode !== first.permissionMode ||
+      entry.serviceTier !== first.serviceTier)) throw new Error("incompatible group");
+    queue.entries.forEach((entry, position) => { entry.groupWithNext = position < index; });
+    return snapshot();
+  });
+  harness.inspection.sdk.stub("threads.queuedMessages.reorder", reorder);
+  harness.inspection.sdk.stub("threads.queuedMessages.setGroupBoundary", group);
+  return {
+    queue, group, reorder,
+    claim() {
+      let count = 1;
+      while (queue.entries[count - 1]?.groupWithNext && count < queue.entries.length) count++;
+      return queue.entries.splice(0, count);
+    },
+  };
+}
 
 /** Timeline rows the watchdog reads, mutated per test. */
 let timelineRows: unknown[] = [];
@@ -90,6 +139,7 @@ async function load(
   seedState?: Record<string, unknown>,
   catalog: ProviderCatalogFixture = {},
   seedKv?: Record<string, unknown>,
+  seedQueue?: QueueEntry[],
 ): Promise<{ bb: BbPluginApi; harness: FakePluginHarness }> {
   const providers = catalog.providers ?? [{ id: "acp-omp", available: true }];
   const modelsByProvider = catalog.models ?? {
@@ -124,6 +174,8 @@ async function load(
         },
       },
       threads: {
+        queuedMessages: { list: async () => [] },
+        queue: { list: async () => seedQueue ?? [] },
         getPluginMetadata: async ({ threadId }: { threadId: string }) =>
           metadata[threadId] ?? {},
         updatePluginMetadata: async ({
@@ -169,6 +221,7 @@ async function load(
       },
     },
   });
+  if (seedQueue) queueFixture(host.harness, seedQueue);
   if (seedState !== undefined) {
     await host.bb.storage.kv.set("state", seedState);
   }
@@ -417,6 +470,277 @@ describe("the dispatch checkpoint", () => {
       attempt: "join-turn",
     });
     expect(decision).toMatchObject({ action: "wait" });
+  });
+
+  it("delivers all queued messages from one child as a single native group", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const entries = ["First update", "Second update", "Final report"].map((text, index) =>
+      makeQueueEntry({
+        id: `queued_${index}`, threadId: THREAD, initiator: "agent", senderThreadId: WORKER,
+        content: [{ type: "text", text, mentions: [] }],
+        waitingOn: { kind: "plugin", pluginId: "orchestrator-mode", reason: "Waiting for the turn to finish" },
+      }),
+    );
+    harness.inspection.sdk.stub("threads.queuedMessages.list", async () => entries);
+    const group = vi.fn(async () => entries);
+    harness.inspection.sdk.stub("threads.queuedMessages.setGroupBoundary", group);
+
+    await harness.behavior.emitThreadEvent("message.queued", { entry: entries[2]! });
+    await vi.waitFor(() => expect(group).toHaveBeenCalledWith({
+      threadId: THREAD,
+      expectedGroupedPrefixQueuedMessageIds: entries.map((entry) => entry.id),
+      groupBoundaryQueuedMessageId: entries[2]!.id,
+    }));
+    expect(entries.map((entry) => textOf(entry.content)))
+      .toEqual(["First update", "Second update", "Final report"]);
+    expect(sentTexts).toEqual([]);
+  });
+
+  it("batches interleaved children in first-child order and preserves every update", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    harness.inspection.sdk.stub("threads.get", async ({ threadId }) =>
+      makeThreadResponse({ id: threadId, parentThreadId: threadId === THREAD ? null : THREAD }),
+    );
+    const original = [childEntry("a1"), childEntry("b1", "th_b"), childEntry("a2", WORKER, {
+      content: [
+        { type: "text", text: "See worker", mentions: [{ start: 4, end: 10,
+          resource: { kind: "thread", label: "worker", threadId: WORKER } }] },
+        { type: "localFile", path: "/tmp/report.txt", name: "report.txt", mimeType: "text/plain", sizeBytes: 42 },
+        { type: "image", url: "https://example.test/report.png" },
+      ],
+    }),
+      childEntry("b2", "th_b"), childEntry("a3")];
+    const { queue, claim, group, reorder } = queueFixture(harness, original);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: original[4]! });
+    expect(queue.entries.map((entry) => entry.id)).toEqual(["a1", "a2", "a3", "b1", "b2"]);
+    expect(reorder).toHaveBeenCalledTimes(2);
+    const first = claim();
+    expect(first.map((entry) => entry.content)).toEqual([original[0]!.content, original[2]!.content, original[4]!.content]);
+    await expect(dispatch(harness, THREAD, { status: "idle" }, {
+      initiator: "agent", senderThreadId: WORKER, queuedMessages: first,
+    })).resolves.toEqual({ action: "proceed" });
+    await harness.behavior.emitThreadEvent("message.dispatched", { entry: first[0]! });
+    const second = claim();
+    expect(second.map((entry) => entry.content)).toEqual([original[1]!.content, original[3]!.content]);
+    expect(group).toHaveBeenCalledTimes(2);
+    expect(queue.entries).toEqual([]);
+    expect(harness.inspection.sdk.calls.some((call) =>
+      ["threads.send", "threads.queuedMessages.send", "threads.queuedMessages.delete", "threads.queuedMessages.create"]
+        .includes(call.path),
+    )).toBe(false);
+  });
+
+  it("coalesces concurrent queue events without regrouping the same rows", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1"), childEntry("a2"), childEntry("a3")];
+    const { queue, group } = queueFixture(harness, original);
+    await Promise.all(original.map((entry) => harness.behavior.emitThreadEvent("message.queued", { entry })));
+    expect(group).toHaveBeenCalledTimes(1);
+    expect(queue.entries.map((entry) => entry.groupWithNext)).toEqual([true, true, false]);
+  });
+
+  it("includes a new update arriving while a group boundary is being committed", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1"), childEntry("a2")];
+    const { queue, group } = queueFixture(harness, original);
+    const commit = group.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    group.mockImplementationOnce(async (args) => { await gate; return commit(args); });
+    const first = harness.behavior.emitThreadEvent("message.queued", { entry: original[1]! });
+    await vi.waitFor(() => expect(group).toHaveBeenCalledTimes(1));
+    const late = childEntry("a3");
+    queue.entries.push(late);
+    const second = harness.behavior.emitThreadEvent("message.queued", { entry: late });
+    release();
+    await Promise.all([first, second]);
+    expect(queue.entries.map((entry) => entry.content)).toEqual([...original, late].map((entry) => entry.content));
+    expect(queue.entries.map((entry) => entry.groupWithNext)).toEqual([true, true, false]);
+    expect(group).toHaveBeenCalledTimes(2);
+    expect(harness.inspection.recheckCount).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["user message", makeQueueEntry({ id: "barrier", threadId: THREAD })],
+    ["unrelated agent", childEntry("barrier", "th_unrelated")],
+    ["another plugin's hold", childEntry("barrier", WORKER, {
+      waitingOn: { kind: "plugin", pluginId: "another-plugin", reason: "Waiting" },
+    })],
+    ["scheduled message", childEntry("barrier", WORKER, { sendAt: Date.now() + 60_000 })],
+  ])("does not group across a %s", async (_label, barrier) => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1"), barrier, childEntry("a2")];
+    const { queue, group, reorder } = queueFixture(harness, original);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: original[2]! });
+    expect(group).not.toHaveBeenCalled();
+    expect(reorder).not.toHaveBeenCalled();
+    expect(queue.entries).toEqual(original);
+  });
+
+  it.each([
+    { model: "different-model" }, { reasoningLevel: "high" as const },
+    { permissionMode: "full" as const }, { serviceTier: "fast" as const },
+  ])("preserves the child's order across incompatible execution options %j", async (override) => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1"), childEntry("a2", WORKER, override), childEntry("a3")];
+    const { queue, group, reorder } = queueFixture(harness, original);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: original[2]! });
+    expect(group).not.toHaveBeenCalled();
+    expect(reorder).not.toHaveBeenCalled();
+    expect(queue.entries).toEqual(original);
+  });
+
+  it("preserves existing trailing user groups", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1"), childEntry("a2"),
+      makeQueueEntry({ id: "u1", threadId: THREAD, groupWithNext: true }),
+      makeQueueEntry({ id: "u2", threadId: THREAD })];
+    const { queue, group } = queueFixture(harness, original);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: original[1]! });
+    expect(group).not.toHaveBeenCalled();
+    expect(queue.entries).toEqual(original);
+  });
+
+  it("preserves an existing group that extends beyond eligible child messages", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1", WORKER, { groupWithNext: true }),
+      childEntry("a2", WORKER, { groupWithNext: true }),
+      childEntry("a3", WORKER, { sendAt: Date.now() + 60_000 })];
+    const { queue, group } = queueFixture(harness, original);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: original[0]! });
+    expect(group).not.toHaveBeenCalled();
+    expect(queue.entries).toEqual(original);
+  });
+
+  it("extends an existing leading child group with a later update", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1", WORKER, { groupWithNext: true }), childEntry("a2"), childEntry("a3")];
+    const { queue } = queueFixture(harness, original);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: original[2]! });
+    expect(queue.entries.map((entry) => entry.groupWithNext)).toEqual([true, true, false]);
+  });
+
+  it("defers a claimed row once so a queue-vs-dispatch race can form the full batch", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const first = childEntry("a1");
+    const { queue, claim } = queueFixture(harness, [childEntry("a2")]);
+    await expect(dispatch(harness, THREAD, { status: "idle" }, {
+      initiator: "agent", senderThreadId: WORKER, queuedMessages: [first],
+    })).resolves.toEqual({ action: "wait", reason: CHILD_BATCH_WAIT_REASON });
+    first.waitingOn = { kind: "plugin", pluginId: "orchestrator-mode", reason: CHILD_BATCH_WAIT_REASON };
+    queue.entries.unshift(first);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: first });
+    const grouped = claim();
+    expect(grouped.map((entry) => entry.id)).toEqual(["a1", "a2"]);
+    await expect(dispatch(harness, THREAD, { status: "idle" }, {
+      initiator: "agent", senderThreadId: WORKER, queuedMessages: grouped,
+    })).resolves.toEqual({ action: "proceed" });
+  });
+
+  it("retries stale boundaries without resurrecting a deleted queued update", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const { queue, group } = queueFixture(harness, [childEntry("a1"), childEntry("a2"), childEntry("a3")]);
+    group.mockImplementationOnce(async () => {
+      queue.entries.splice(1, 1);
+      throw new Error("stale prefix");
+    });
+    await harness.behavior.emitThreadEvent("message.queued", { entry: queue.entries[2]! });
+    expect(queue.entries.map((entry) => entry.id)).toEqual(["a1", "a3"]);
+    expect(queue.entries.map((entry) => entry.groupWithNext)).toEqual([true, false]);
+    expect(group).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps original rows deliverable if grouping fails persistently", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const first = childEntry("a1");
+    const original = [first, childEntry("a2")];
+    const { queue, group } = queueFixture(harness, original);
+    group.mockImplementation(async () => { throw new Error("queue unavailable"); });
+    await harness.behavior.emitThreadEvent("message.queued", { entry: first });
+    expect(group).toHaveBeenCalledTimes(3);
+    expect(queue.entries).toEqual(original);
+    first.waitingOn = { kind: "plugin", pluginId: "orchestrator-mode", reason: CHILD_BATCH_WAIT_REASON };
+    await expect(dispatch(harness, THREAD, { status: "idle" }, {
+      initiator: "agent", senderThreadId: WORKER, queuedMessages: [first],
+    })).resolves.toEqual({ action: "proceed" });
+    await expect(dispatch(harness, THREAD, { status: "active" }, {
+      initiator: "agent", senderThreadId: WORKER, queuedMessages: [first], attempt: "join-turn",
+    })).resolves.toMatchObject({ action: "wait", reason: expect.stringContaining("current turn") });
+  });
+
+  it.each(["disabled", "immediate"])("does not group when delivery is %s", async (mode) => {
+    const { harness } = await load({ childMessageDelivery: mode === "immediate" ? "immediate" : "queued" });
+    if (mode !== "disabled") await enable(harness);
+    const original = [childEntry("a1"), childEntry("a2")];
+    const { queue, group } = queueFixture(harness, original);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: original[1]! });
+    expect(group).not.toHaveBeenCalled();
+    expect(queue.entries).toEqual(original);
+  });
+
+  it("honours disabling orchestrator mode while a queue read is in flight", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1"), childEntry("a2")];
+    const { queue, group, reorder } = queueFixture(harness, original);
+    let release!: (entries: QueueEntry[]) => void;
+    const pending = new Promise<QueueEntry[]>((resolve) => { release = resolve; });
+    harness.inspection.sdk.stub("threads.queuedMessages.list", () => pending);
+    const event = harness.behavior.emitThreadEvent("message.queued", { entry: original[1]! });
+    await vi.waitFor(() => expect(harness.inspection.sdk.calls.some((call) => call.path === "threads.queuedMessages.list")).toBe(true));
+    await harness.behavior.callRpc("set_enabled", { threadId: THREAD, enabled: false });
+    release(original);
+    await event;
+    expect(group).not.toHaveBeenCalled();
+    expect(reorder).not.toHaveBeenCalled();
+    expect(queue.entries).toEqual(original);
+  });
+
+  it("groups under a project override of immediate global delivery", async () => {
+    const { harness } = await load({ childMessageDelivery: "immediate" });
+    await enable(harness);
+    await harness.behavior.callRpc("set_scope_setting", {
+      projectId: makeMessageDispatchHookContext().project.id, key: "childMessageDelivery", value: "queued",
+    });
+    const original = [childEntry("a1"), childEntry("a2")];
+    const { group } = queueFixture(harness, original);
+    await harness.behavior.emitThreadEvent("message.queued", { entry: original[1]! });
+    expect(group).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers same-child batches already waiting when the plugin reloads", async () => {
+    const { bb } = await load({}, { [THREAD]: { enabled: true } }, {}, undefined,
+      [childEntry("a1"), childEntry("a2")]);
+    const queued = await bb.sdk.threads.queuedMessages.list({ threadId: THREAD });
+    expect(queued.map((entry) => entry.groupWithNext)).toEqual([true, false]);
+  });
+
+  it("stops an in-flight grouping job on disposal", async () => {
+    const { harness } = await load();
+    await enable(harness);
+    const original = [childEntry("a1"), childEntry("a2")];
+    const { group } = queueFixture(harness, original);
+    let release!: (entries: QueueEntry[]) => void;
+    const pending = new Promise<QueueEntry[]>((resolve) => { release = resolve; });
+    harness.inspection.sdk.stub("threads.queuedMessages.list", () => pending);
+    const event = harness.behavior.emitThreadEvent("message.queued", { entry: original[1]! });
+    await vi.waitFor(() => expect(harness.inspection.sdk.calls.some((call) => call.path === "threads.queuedMessages.list")).toBe(true));
+    await harness.lifecycle.dispose();
+    release(original);
+    await event;
+    expect(group).not.toHaveBeenCalled();
   });
 
   it("holds messages from multiple children and releases each retry when the orchestrator is idle", async () => {

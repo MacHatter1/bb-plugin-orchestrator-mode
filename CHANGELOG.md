@@ -15,6 +15,9 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ### Fixed
 
+- Deliver compatible queued updates from the same child together, preserving
+  all content and each child's message order, including interleaved arrivals.
+  Recover pending batches on reload and handle concurrent queue changes.
 - Preserve the per-turn delegation budget when messages join a running turn
   or wait in the queue; reset it only when a new turn starts.
 

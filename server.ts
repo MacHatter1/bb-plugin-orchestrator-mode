@@ -25,6 +25,7 @@ import {
   type PluginCliContext,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { childMessageQueue, CHILD_BATCH_WAIT_REASON } from "./child-message-queue";
 import {
   CONTRACT_PRESETS,
   DEFAULT_ENFORCEMENT,
@@ -2130,6 +2131,20 @@ export default async function plugin(bb: BbPluginApi) {
 
   // --- layer 2: the dispatch checkpoint ------------------------------------
 
+  const childQueue = childMessageQueue(bb, async (threadId) => {
+    if ((await getState(threadId))?.enabled !== true) return false;
+    const thread = await bb.sdk.threads.get({ threadId });
+    return (await getState(threadId))?.enabled === true &&
+      settingsFor(thread.projectId).childMessageDelivery === "queued";
+  });
+
+  bb.events.on("message.queued", ({ entry }) => {
+    if (childQueue.owned(entry)) return childQueue.prepare(entry.threadId);
+  });
+  // Once a leading batch leaves, the next child becomes the queue's prefix.
+  bb.events.on("message.dispatched", ({ entry }) => childQueue.prepare(entry.threadId));
+  bb.events.on("message.cancelled", ({ entry }) => childQueue.prepare(entry.threadId));
+
   bb.experimental_hooks.on("message.dispatch", async (ctx) => {
     const threadId = ctx.thread.id;
     try {
@@ -2174,7 +2189,7 @@ export default async function plugin(bb: BbPluginApi) {
         const settings = settingsFor(ctx.project.id);
         if (
           settings.childMessageDelivery === "queued" &&
-          (ctx.attempt === "join-turn" || ctx.thread.status === "active")
+          (ctx.queuedMessages.length > 0 || ctx.attempt === "join-turn" || ctx.thread.status === "active")
         ) {
           const messages = ctx.queuedMessages.length > 0 ? ctx.queuedMessages : [ctx];
           // A mixed group may contain a user message or an unrelated sender.
@@ -2198,10 +2213,15 @@ export default async function plugin(bb: BbPluginApi) {
               ),
             );
             if (children.every(Boolean)) {
-              return {
-                action: "wait" as const,
-                reason: "Child messages are queued until the orchestrator finishes its current turn.",
-              };
+              if (ctx.attempt === "join-turn" || ctx.thread.status === "active") {
+                return {
+                  action: "wait" as const,
+                  reason: "Child messages are queued until the orchestrator finishes its current turn.",
+                };
+              }
+              if (await childQueue.defer(threadId, ctx.queuedMessages)) {
+                return { action: "wait" as const, reason: CHILD_BATCH_WAIT_REASON };
+              }
             }
           }
         }
@@ -3359,10 +3379,20 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.onDispose(() => {
     disposed = true;
+    childQueue.dispose();
     for (const timer of scanTimers.values()) clearTimeout(timer);
     scanTimers.clear();
     scanning.clear();
   });
+
+  // Recover durable plugin-held rows after a reload, even if no new child
+  // message arrives. BB remains the owner of their contents and claims.
+  try {
+    const waiting = await bb.sdk.threads.queue.list({ waitHolder: `plugin:${bb.pluginId}` });
+    await Promise.all([...new Set(waiting.map((entry) => entry.threadId))].map(childQueue.prepare));
+  } catch (cause) {
+    bb.log.warn(`child queue recovery failed: ${String(cause)}`);
+  }
 
   bb.log.info(`loaded (enforcement=${live.enforcement})`);
 }

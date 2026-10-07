@@ -68,6 +68,7 @@
     "assets",
     "dist",
     "server.ts",
+    "child-message-queue.ts",
     "shared.ts",
     "app.tsx",
     "app.css",

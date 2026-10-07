@@ -32,8 +32,27 @@ through `threads.get`, including every sender in a grouped queue re-attempt.
 Groups containing a user, a system notice or an unrelated sender proceed.
 Lookup errors fail open, as other dispatch-checkpoint errors do.
 
-BB owns the durable queue, retrying and grouping. The plugin keeps no message
-copies, timers or queue claims. A retry on an idle thread proceeds; disabling
+BB owns the durable queue, retrying and claims. On queue events, the plugin uses
+`queuedMessages.reorder` and `setGroupBoundary` to collect compatible updates
+from the leading child into one native group. It preserves each child's order,
+including when children are interleaved, and all original row contents. A
+per-thread job coalesces concurrent events; dispatch and cancellation prepare
+the next leading batch, and startup recovers existing plugin-held rows.
+
+Only direct-child inline rows held by this plugin, without scheduling or failure,
+are eligible. User rows, unrelated senders and other waits form boundaries.
+Updates from one child with different execution options also form a boundary,
+so an earlier incompatible update is never overtaken by that child's later one.
+The native boundary setter clears trailing group edges, so the plugin skips
+batching when it would split an existing group outside the batch. Its expected
+prefix IDs protect against stale claims, deletions and reorders; failures retry
+with a fresh queue snapshot up to three times.
+
+The plugin keeps no message copies, delivery timers or queue claims. If an idle
+dispatch claims a row before grouping completes, the hook allows one preparatory
+wait so the original rows can be requeued and grouped. A persisted wait reason
+bounds this extra retry; persistent SDK failures leave the original rows
+deliverable individually. Otherwise an idle retry proceeds. Disabling
 the mode or choosing `immediate` also releases the hold on recheck. BB's manual
 Send-now operation bypasses plugin policy. Only `start-turn` attempts reset the
 per-turn delegation budget; waits and `join-turn` attempts retain it.

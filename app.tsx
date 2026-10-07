@@ -615,7 +615,7 @@ function ScopeSettings() {
             {
               value: "queued",
               label: "queued until turn ends",
-              help: "Keeps child messages in BB's queue while the orchestrator is working, then releases them as the orchestrator becomes idle.",
+              help: "Queues child messages until the turn ends, then delivers compatible updates from each child together with all content preserved.",
             },
             {
               value: "immediate",
