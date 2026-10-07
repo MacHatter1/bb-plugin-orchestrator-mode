@@ -1,15 +1,9 @@
 /* bb-plugin-orchestrator-mode — frontend styles.
  *
  * Colors come from the host theme's live CSS variables via Tailwind token
- * classes. The few rules here are the ones Tailwind cannot express: the
- * composer draft effect painted by `composer.setTextEffect`, which needs a
- * stable class name the host applies to the editable region.
+ * classes. These rules style the mode indicator and controls, not the user's
+ * editable draft.
  */
-
-.orch-draft {
-  box-shadow: inset 2px 0 0 0 var(--color-primary, currentColor);
-  border-radius: 0.25rem;
-}
 
 .orch-strip {
   display: flex;

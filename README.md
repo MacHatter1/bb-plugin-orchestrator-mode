@@ -547,7 +547,7 @@ bb plugin dev
 ```text
 server.ts   settings, storage, dispatch hook, watchdog, delegation, RPC and CLI
 shared.ts   pure policy, command classification and contract text
-app.tsx     composer toggle, status strip, draft effect and menu fallback
+app.tsx     composer toggle, status strip and menu fallback
 assets/     canonical delegation icon used by BB
 skills/     bundled agent skill
 docs/       README logo, screenshots and design notes

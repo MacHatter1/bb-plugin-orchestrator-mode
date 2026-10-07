@@ -6,6 +6,11 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- Remove the draft-text decoration that drew a stray edge inside the composer
+  while orchestrator mode was on; the toggle and status banner remain unchanged.
+
 ## 0.1.2 - 2026-10-06
 
 ### Added

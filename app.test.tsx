@@ -162,6 +162,19 @@ describe("registration", () => {
 });
 
 describe("thread composer", () => {
+  it("leaves an enabled thread's editable draft undecorated", async () => {
+    const rpc = makeRpc({ enabled: true });
+    const options = threadOptions();
+    options.composer.text = "First line\nSecond line";
+    const host = mount(Host, rpc, options);
+    await flush();
+
+    expect(within(host.container).getByText(/Orchestrator mode is on/)).toBeTruthy();
+    expect(host.inspection.composer.textEffect).toBeNull();
+    expect(host.inspection.composer.textEffectCalls).toEqual([]);
+    expect(host.inspection.composer.text).toBe(options.composer.text);
+  });
+
   it("shows an off toggle and no strip while the mode is off", async () => {
     const rpc = makeRpc();
     const host = mount(Host, rpc, threadOptions());
@@ -176,7 +189,7 @@ describe("thread composer", () => {
     expect(host.inspection.composer.textEffect).toBeNull();
   });
 
-  it("turns the mode on from the toggle and paints the draft", async () => {
+  it("turns the mode on from the toggle without decorating the draft", async () => {
     const rpc = makeRpc();
     const host = mount(Host, rpc, threadOptions());
     const toggle = mount(Toggle, rpc, threadOptions());
@@ -186,23 +199,27 @@ describe("thread composer", () => {
 
     expect(rpc.calls.some((call) => call.method === "set_enabled")).toBe(true);
     expect(toggleButton(toggle).getAttribute("aria-pressed")).toBe("true");
-    expect(host.inspection.composer.textEffect).toEqual({ className: "orch-draft" });
+    expect(host.inspection.composer.textEffect).toBeNull();
+    expect(host.inspection.composer.textEffectCalls).toEqual([]);
+    expect(host.inspection.composer.text).toBe("do the thing");
     expect(within(host.container).getByText(/Orchestrator mode is on/)).toBeTruthy();
     expect(within(host.container).getByText(/may only read, plan, ask/)).toBeTruthy();
   });
 
-  it("turns the mode off from the strip and clears the draft effect", async () => {
+  it("turns the mode off from the strip without changing the draft", async () => {
     const rpc = makeRpc({ enabled: true });
     const host = mount(Host, rpc, threadOptions());
     await flush();
     expect(within(host.container).getByText(/Orchestrator mode is on/)).toBeTruthy();
-    expect(host.inspection.composer.textEffect).toEqual({ className: "orch-draft" });
+    expect(host.inspection.composer.textEffect).toBeNull();
 
     await click(within(host.container).getByText("Turn off"));
 
     expect(within(host.container).queryByText(/Orchestrator mode is on/)).toBeNull();
     expect(rpc.state.enabled).toBe(false);
     expect(host.inspection.composer.textEffect).toBeNull();
+    expect(host.inspection.composer.textEffectCalls).toEqual([]);
+    expect(host.inspection.composer.text).toBe("do the thing");
   });
 
   it("reports the direct work the watchdog caught", async () => {
@@ -281,6 +298,19 @@ describe("thread composer", () => {
 });
 
 describe("new-thread composer", () => {
+  it("leaves the new-thread draft undecorated when the default is on", async () => {
+    const rpc = makeRpc({ defaultForNewThreads: true });
+    const options = composeOptions();
+    options.composer.text = "Start a new task";
+    const host = mount(Host, rpc, options);
+    await flush();
+
+    expect(within(host.container).getByText(/New threads start as orchestrators/)).toBeTruthy();
+    expect(host.inspection.composer.textEffect).toBeNull();
+    expect(host.inspection.composer.textEffectCalls).toEqual([]);
+    expect(host.inspection.composer.text).toBe(options.composer.text);
+  });
+
   it("toggles the plugin-wide default instead of a thread", async () => {
     const rpc = makeRpc();
     const host = mount(Host, rpc, composeOptions());
@@ -294,6 +324,9 @@ describe("new-thread composer", () => {
     expect(rpc.calls.some((call) => call.method === "set_default")).toBe(true);
     expect(rpc.calls.some((call) => call.method === "set_enabled")).toBe(false);
     expect(rpc.isDefaultEnabled()).toBe(true);
+    expect(host.inspection.composer.textEffect).toBeNull();
+    expect(host.inspection.composer.textEffectCalls).toEqual([]);
+    expect(host.inspection.composer.text).toBe("");
   });
 
   it("renders nothing in the root compose screen while the default is off", async () => {

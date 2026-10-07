@@ -3,9 +3,9 @@
 // One composer customization with three surfaces over one shared controller:
 //
 //   banner  (always mounted)  owns the data: it holds the plugin's RPC client,
-//                             keeps the thread's state fresh, paints the draft
-//                             effect, and renders the visible strip when the
-//                             mode is on. It returns null when the mode is off
+//                             keeps the thread's state fresh and renders the
+//                             visible strip when the mode is on. It returns
+//                             null when the mode is off
 //                             but stays mounted, which is what makes the other
 //                             two surfaces work in every composer layout.
 //   action  (toggle button)   renders before the native voice/submit buttons.
@@ -21,7 +21,6 @@ import {
   definePluginApp,
   experimental_PermissionModePicker as PermissionModePicker,
   experimental_ProviderModelPicker as ProviderModelPicker,
-  useComposer,
   useComposerView,
   useRealtime,
   useRpc,
@@ -111,7 +110,6 @@ const ICON_NAME = "orchestrator-mode/hub";
  */
 function OrchestratorHost() {
   const view = useComposerView();
-  const composer = useComposer();
   const rpc = useRpc<typeof rpcContract>();
   const key = scopeKey(view.scope);
   const threadId = view.scope.kind === "thread" ? view.scope.threadId : null;
@@ -191,13 +189,7 @@ function OrchestratorHost() {
     };
   }, [key, enabled, state, busy, applyEnabled]);
 
-  // Paint the draft while the mode is on. The host clears it when this
-  // customization unmounts or the composer scope changes.
-  useEffect(() => {
-    if (key === null) return;
-    composer.setTextEffect(enabled ? { className: "orch-draft" } : null);
-  }, [key, enabled, composer]);
-
+  // The strip and toggle indicate the mode; leave editable draft text alone.
   if (key === null || !enabled) return null;
 
   if (threadId === null) {
