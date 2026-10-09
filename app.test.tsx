@@ -351,6 +351,7 @@ describe("the settings section", () => {
       maxParallelWorkers: 8,
       maxDelegationsPerTurn: 20,
       contractPreset: "standard",
+      workerModelPolicy: "pinned",
       workerRetention: "keep",
       workerWorkspace: "shared",
       childMessageDelivery: "queued",
@@ -561,6 +562,28 @@ describe("the settings section", () => {
       projectId: null,
       key: "contractPreset",
       value: "delegate-only",
+    });
+  });
+
+  it("writes the worker model policy from the scope editor", async () => {
+    const rpc = makeSettingsRpc();
+    const slot = mountSettings(rpc);
+    await flush();
+    const query = within(slot.container);
+    const policy = query.getByLabelText("Per-unit model overrides") as HTMLSelectElement;
+    // Pinned first, because it is the value a scope that never opened the row keeps.
+    expect(Array.from(policy.options, (option) => option.textContent)).toEqual([
+      "pinned",
+      "flexible",
+    ]);
+    await act(async () => {
+      fireEvent.change(policy, { target: { value: "flexible" } });
+    });
+    await flush();
+    expect(rpc.calls.filter((call) => call.method === "set_scope_setting").at(-1)?.input).toEqual({
+      projectId: null,
+      key: "workerModelPolicy",
+      value: "flexible",
     });
   });
 

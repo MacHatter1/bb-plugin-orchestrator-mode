@@ -30,13 +30,14 @@ import {
   type PluginComposerScope,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import { WORKER_RETENTION, WORKER_RETENTION_DESCRIPTIONS, WORKER_WORKSPACE_DESCRIPTIONS, WORKER_WORKSPACES, type ContractDto, type OrchestratorStateDto, type ScopeSettingsDto, type SettingsViewDto, type rpcContract } from "./server";
+import { WORKER_MODEL_POLICY_DESCRIPTIONS, WORKER_RETENTION, WORKER_RETENTION_DESCRIPTIONS, WORKER_WORKSPACE_DESCRIPTIONS, WORKER_WORKSPACES, type ContractDto, type OrchestratorStateDto, type ScopeSettingsDto, type SettingsViewDto, type rpcContract } from "./server";
 import {
   CONTRACT_PRESET_DESCRIPTIONS,
   CONTRACT_PRESETS,
   ENFORCEMENT_DESCRIPTIONS,
   ENFORCEMENT_LEVELS,
   INSTRUCTION_LIMIT,
+  WORKER_MODEL_POLICIES,
   type WorkerConfig,
   type WorkerExecution,
   type WorkerPresetName,
@@ -706,6 +707,16 @@ function ScopeSettings() {
             </Button>
           </SettingRow>
         ) : null}
+        {enumRow(
+          "workerModelPolicy",
+          "Per-unit model overrides",
+          "Whether a delegation may pick its own model. Pinned runs every worker on the execution below, or on a stored kind it names as a preset; flexible lets the orchestrator ask for a stronger or cheaper model for one unit.",
+          WORKER_MODEL_POLICIES.map((policy) => ({
+            value: policy,
+            label: policy,
+            help: WORKER_MODEL_POLICY_DESCRIPTIONS[policy],
+          })),
+        )}
       </div>
 
       <div className="mt-3 border-t border-border/60 pt-3 flex items-start justify-between gap-6">

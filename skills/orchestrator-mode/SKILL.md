@@ -145,9 +145,12 @@ it when you cannot judge a unit from its report alone.
 ## Choosing the worker's execution
 
 Workers run on the provider, model and access the settings section's worker rows
-name, falling back to this project's remembered defaults. Override those for one
-unit with `provider`, `model`, `reasoning` and `permissionMode`. Give a hard unit
-a stronger model and a mechanical one a cheaper model.
+name, falling back to this project's remembered defaults. The scope is pinned by
+default, so a delegation must not pass `provider`, `model` or `reasoning`: every
+worker runs on what the settings say. Only when the user switches the scope to
+`flexible` do those three work, and then a hard unit may take a stronger model
+and a mechanical one a cheaper one. A refusal names the policy; re-delegate
+without the argument rather than asking for it again.
 
 `preset` names a kind of work the plugin has a saved setup for, such as `build`,
 `review` or `research`. Your own arguments beat the preset for that unit. Naming

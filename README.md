@@ -190,6 +190,11 @@ pair rather than a switch:
 - **Retry a failed worker** `Report` (hand the failure back to the orchestrator)
   or `Retry` (re-delegate the same brief on a second provider, model and access
   you pick, each with its own picker).
+- **Per-unit model overrides** `Pinned` (default) or `Flexible`. Pinned runs
+  every worker on the execution above, or on a stored kind it names as a preset:
+  a delegation that passes `model`, `provider` or `reasoning` is refused, and the
+  contract stops inviting one. Flexible lets the orchestrator ask for a stronger
+  or cheaper model for a single unit instead.
 
 ### Where workers run
 
@@ -249,8 +254,8 @@ A single delegation overrides it with the tool's arguments:
 }
 ```
 
-Give the hard units a stronger model and the mechanical ones a cheaper one. The
-orchestrator discovers valid IDs with `bb provider list` and
+Under a `Flexible` scope, give the hard units a stronger model and the mechanical
+ones a cheaper one. The orchestrator discovers valid IDs with `bb provider list` and
 `bb provider models <provider>`; both count as read-only orientation. An ID the
 catalog does not offer is refused, naming the options that are available, rather
 than spawning a worker whose start cannot succeed. Naming a provider that does

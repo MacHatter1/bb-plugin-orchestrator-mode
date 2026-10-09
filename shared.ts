@@ -107,6 +107,16 @@ export const WORKER_PRESETS = ["build", "review", "research"] as const;
 export type WorkerPresetName = (typeof WORKER_PRESETS)[number];
 
 /**
+ * Whether a delegation may choose its own model. `pinned` is the default: every
+ * worker runs on the execution the scope stores, or on a stored kind it names as
+ * a `preset`, so the orchestrator can neither upgrade nor downgrade a unit.
+ * `flexible` restores the earlier behaviour, where a delegation may name any
+ * model in the catalog and the contract invites a stronger one for a hard unit.
+ */
+export const WORKER_MODEL_POLICIES = ["pinned", "flexible"] as const;
+export type WorkerModelPolicy = (typeof WORKER_MODEL_POLICIES)[number];
+
+/**
  * What the plugin stores for workers: the execution every delegation starts on,
  * plus the one to retry with when a worker fails.
  *
@@ -1373,6 +1383,12 @@ interface InstructionInput {
   /** Which level of contract to emit. Defaults to `standard`. */
   preset?: ContractPresetId;
   /**
+   * Whether the contract invites per-delegation model choice. `pinned` — the
+   * default — says the opposite: every worker runs on the stored execution, and
+   * `delegate` refuses the arguments that would move one off it.
+   */
+  modelPolicy?: WorkerModelPolicy;
+  /**
    * Where the scope's units run. `worktree` and `mixed` add a section on what a
    * worktree leaves behind and how it lands; `shared` says nothing.
    */
@@ -1464,6 +1480,22 @@ export function buildInstructions(input: InstructionInput): string {
     ? "Read-only shell commands are allowed for orientation. Literal stderr suppression (`2>/dev/null`) is allowed; other output redirects count as work."
     : "Only CLI delegation commands may run; read-only shell exploration is disabled.";
 
+  /**
+   * What the contract says about whose model a worker runs on. A pinned scope —
+   * the default — gets the rule that replaces the invitation: the stored
+   * execution is the only one, plus any stored kind, because naming a raw model
+   * is what moves a worker off that execution.
+   */
+  const pinned = input.modelPolicy !== "flexible";
+  const modelBudget = pinned
+    ? `${workerBudget(input.workerConfig)} Every worker runs on that execution${savedKinds.length === 0 ? "" : ", or on a stored kind it names as \`preset\`"}: do not pass \`model\`, \`provider\` or \`reasoning\` on a delegation.${savedPresets}`
+    : `${workerBudget(input.workerConfig)} Override per delegation with \`model\`,
+\`provider\` (alias \`providerId\`), \`reasoning\` and \`permissionMode\`. Give a hard unit a stronger
+model, a mechanical one a cheaper one.${savedPresets}`;
+  const pinLine = pinned
+    ? ""
+    : "   Pin with `--provider <id> --model <id>`; pinning does not require turning this mode off.\n";
+
   const reminderLines = (input.reminders ?? [])
     .slice(-5)
     .map((line) => (line.length > REMINDER_LINE_LIMIT ? `${line.slice(0, REMINDER_LINE_LIMIT - 3)}...` : line));
@@ -1500,8 +1532,7 @@ ${workspaceRule}
    \`bb orchestrator-mode delegate --task 'complete brief'\`.
    Quote briefs safely; \`--no-wait\` fans out independent units. Resuming a
    provider session may retain its original tool list.
-   Pin with \`--provider <id> --model <id>\`; pinning does not require turning this mode off.
-${reviewStep}
+${pinLine}${reviewStep}
    Send corrections with \`bb thread tell <worker-id> ...\` (alias \`message\`) to
    recorded workers; safely quoted messages or quoted stdin heredocs are delegation.
 5. Synthesise results and what remains. Link worker ids so the user can open them.
@@ -1513,9 +1544,7 @@ tool that changes something, stop and delegate.
 
 ## Choosing the worker's model
 
-${workerBudget(input.workerConfig)} Override per delegation with \`model\`,
-\`provider\` (alias \`providerId\`), \`reasoning\` and \`permissionMode\`. Give a hard unit a stronger
-model, a mechanical one a cheaper one.${savedPresets} Ids come from
+${modelBudget} Ids come from
 \`bb provider list\` and \`bb provider models <provider>\`; both are read-only.
 
 ${extraBudget(extra)}## If you cannot delegate

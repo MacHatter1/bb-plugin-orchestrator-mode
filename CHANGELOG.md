@@ -8,10 +8,22 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ### Added
 
+- Add a worker model policy setting — **Per-unit model overrides** in the scope
+  editor, `scope --model-policy pinned|flexible` on the CLI. `Flexible` lets a
+  delegation pass `model`, `provider` and `reasoning` and keeps the contract's
+  "give a hard unit a stronger model" advice. `Pinned` refuses those three and
+  says so in the contract, while leaving stored presets reachable.
 - Queue direct child messages while an orchestrator turn is running, using
   BB's persistent queue and delivery when idle. Global/Project settings
   and `scope --child-messages queued|immediate` control the policy. Automatic
   child system notices still use BB's separate delivery path.
+
+### Changed
+
+- Default the worker model policy to `Pinned`, so a delegation can no longer
+  upgrade or downgrade a worker on its own. A scope that wants the previous
+  behaviour switches to `Flexible`; scopes that never opened the setting now run
+  every worker on the stored execution or a stored preset.
 
 ### Fixed
 

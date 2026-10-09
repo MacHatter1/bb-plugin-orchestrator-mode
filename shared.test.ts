@@ -4,6 +4,7 @@ import {
   EXTRA_INSTRUCTION_LIMIT,
   INSTRUCTION_LIMIT,
   CONTRACT_PRESETS,
+  WORKER_MODEL_POLICIES,
   buildInstructions,
   buildNudge,
   classifyRow,
@@ -686,6 +687,7 @@ describe("the contract", () => {
       for (const allowReadCommands of [true, false]) {
        for (const preset of CONTRACT_PRESETS) {
         for (const workspace of ["shared", "worktree", "mixed"] as const) {
+        for (const modelPolicy of WORKER_MODEL_POLICIES) {
         const text = buildInstructions({
           enforcement,
           allowReadCommands,
@@ -706,6 +708,7 @@ describe("the contract", () => {
           extra: appended,
           preset,
           workspace,
+          modelPolicy,
         });
         expect(text.length).toBeLessThanOrEqual(INSTRUCTION_LIMIT);
         // The clamp exists so the tail — what to do when delegation is impossible —
@@ -715,6 +718,7 @@ describe("the contract", () => {
         // the mechanism that makes room. Growing the contract means trimming it,
         // and this is the assertion that says so.
         expect(text).toContain(appended);
+        }
         }
        }
       }
@@ -788,12 +792,39 @@ describe("the contract", () => {
     expect(text).toContain("other output redirects count as work");
   });
 
-  it("explains how to pin workers without disabling the mode", () => {
-    const text = buildInstructions({ enforcement: "guard", allowReadCommands: true });
-    expect(text).toContain("`providerId`");
-    expect(text).toContain("`model`");
-    expect(text).toContain("--provider <id> --model <id>");
-    expect(text).toContain("pinning does not require turning this mode off");
+  it("pins workers by default, and explains the alternative when it is allowed", () => {
+    // Pinned is the shipped default: a scope that never opens the setting must not
+    // be told it can pick a stronger model per unit.
+    const pinned = buildInstructions({ enforcement: "guard", allowReadCommands: true });
+    expect(pinned).toContain("Every worker runs on that execution");
+    expect(pinned).toContain("do not pass `model`, `provider` or `reasoning`");
+    expect(pinned).not.toContain("--provider <id> --model <id>");
+    expect(pinned).not.toContain("a mechanical one a cheaper one");
+
+    const flexible = buildInstructions({
+      enforcement: "guard",
+      allowReadCommands: true,
+      modelPolicy: "flexible",
+    });
+    expect(flexible).toContain("`providerId`");
+    expect(flexible).toContain("`model`");
+    expect(flexible).toContain("--provider <id> --model <id>");
+    expect(flexible).toContain("pinning does not require turning this mode off");
+  });
+
+  it("keeps a stored kind reachable under the pinned default", () => {
+    const text = buildInstructions({
+      enforcement: "guard",
+      allowReadCommands: true,
+      workerConfig: {
+        providerId: "acp-omp",
+        model: "anthropic/claude-haiku-5-5",
+        presets: { research: { model: "anthropic/claude-sonnet-5-5" } },
+      },
+    });
+    expect(text).toContain("model `anthropic/claude-haiku-5-5`");
+    expect(text).toContain("or on a stored kind it names as `preset`");
+    expect(text).toContain("Saved worker kinds: research");
   });
 
   it("only warns about the watchdog when one is running", () => {

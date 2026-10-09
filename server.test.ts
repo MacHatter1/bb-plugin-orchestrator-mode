@@ -1391,7 +1391,7 @@ describe("the delegation tool", () => {
   });
 
   it.each(["provider", "providerId"])("pins %s and the model before starting a worker", async (field) => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     await harness.behavior.callAgentTool(
       DELEGATE_TOOL,
@@ -1421,7 +1421,7 @@ describe("the delegation tool", () => {
     { providerId: "grok" },
     { model: "grok-test-model" },
   ])("supports an individual worker pin: %j", async (pins) => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     await harness.behavior.callAgentTool(
       DELEGATE_TOOL,
@@ -1435,7 +1435,7 @@ describe("the delegation tool", () => {
   });
 
   it.each(["provider", "providerId"])("normalises whitespace in %s and model pins", async (field) => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     await harness.behavior.callAgentTool(
       DELEGATE_TOOL,
@@ -1464,7 +1464,7 @@ describe("the delegation tool", () => {
   });
 
   it("does not fall back to an unpinned worker when BB rejects the pins", async () => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     harness.inspection.sdk.stub("threads.spawn", async () => {
       throw new Error("requested provider/model unavailable");
@@ -1481,6 +1481,67 @@ describe("the delegation tool", () => {
     expect(await harness.behavior.callRpc("get_state", { threadId: THREAD })).toMatchObject({
       delegations: [],
     });
+  });
+
+  it("refuses a raw model pin under the pinned default", async () => {
+    const { harness } = await load({}, undefined, CATALOG);
+    await enable(harness);
+    // The default is pinned, so a delegation cannot move a worker off the scope's
+    // execution — not even upward.
+    await expect(
+      harness.behavior.callAgentTool(
+        DELEGATE_TOOL,
+        { task: "The hard unit", model: "claude-opus-5-5", waitForResult: false },
+        { threadId: THREAD, projectId: "proj_1" },
+      ),
+    ).rejects.toThrow(/pins worker execution, so `model` cannot be set/);
+    expect(spawned).toHaveLength(0);
+  });
+
+  it.each(["provider", "reasoning"])("refuses a raw %s pin under the pinned default", async (field) => {
+    const { harness } = await load({}, undefined, PIN_CATALOG);
+    await enable(harness);
+    const args =
+      field === "provider"
+        ? { task: "The hard unit", provider: "grok", waitForResult: false }
+        : { task: "The hard unit", reasoning: "max" as const, waitForResult: false };
+    await expect(
+      harness.behavior.callAgentTool(DELEGATE_TOOL, args, { threadId: THREAD, projectId: "proj_1" }),
+    ).rejects.toThrow(new RegExp(`pins worker execution, so \`${field}\` cannot be set`));
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("still runs a stored preset under the pinned default", async () => {
+    const { harness } = await load({}, undefined, CATALOG);
+    await harness.behavior.callRpc("set_worker_execution", {
+      providerId: "acp-omp",
+      model: "command-code/deepseek/deepseek-v4.1-flash-fast",
+      presets: { research: { model: "claude-opus-5-5" } },
+    });
+    await enable(harness);
+    // A kind the user saved is their own choice, so pinned leaves it reachable.
+    await harness.behavior.callAgentTool(
+      DELEGATE_TOOL,
+      { task: "Research it", preset: "research", waitForResult: false },
+      { threadId: THREAD, projectId: "proj_1" },
+    );
+    expect(spawned[0]).toMatchObject({ model: "claude-opus-5-5" });
+  });
+
+  it("lets a scope opt into flexible, and then a delegation picks its own model", async () => {
+    const { harness } = await load({}, undefined, CATALOG);
+    await enable(harness);
+    await harness.behavior.callRpc("set_scope_setting", {
+      projectId: "proj_1",
+      key: "workerModelPolicy",
+      value: "flexible",
+    });
+    await harness.behavior.callAgentTool(
+      DELEGATE_TOOL,
+      { task: "The hard unit", model: "claude-opus-5-5", waitForResult: false },
+      { threadId: THREAD, projectId: "proj_1" },
+    );
+    expect(spawned[0]).toMatchObject({ model: "claude-opus-5-5" });
   });
 
   it("returns immediately when asked not to wait", async () => {
@@ -1596,7 +1657,7 @@ describe("the delegation tool", () => {
   });
 
   it("lets one delegation override the stored worker execution", async () => {
-    const { harness } = await load({}, undefined, CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, CATALOG);
     await harness.behavior.callRpc("set_worker_execution", {
       providerId: "acp-omp",
       model: "command-code/deepseek/deepseek-v4.1-flash-fast",
@@ -1836,7 +1897,7 @@ describe("the delegation tool", () => {
   });
 
   it("refuses a worker model the catalog does not offer", async () => {
-    const { harness } = await load({}, undefined, CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, CATALOG);
     await enable(harness);
     await expect(
       harness.behavior.callAgentTool(
@@ -2381,7 +2442,7 @@ describe("the delegation tool", () => {
   });
 
   it("lets a call's own arguments beat the preset", async () => {
-    const { harness } = await load({}, undefined, CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, CATALOG);
     await harness.behavior.callRpc("set_worker_execution", {
       providerId: "acp-omp",
       model: "command-code/deepseek/deepseek-v4.1-flash-fast",
@@ -2638,6 +2699,7 @@ describe("rpc", () => {
       maxParallelWorkers: 8,
       maxDelegationsPerTurn: 20,
       contractPreset: "standard",
+      workerModelPolicy: "pinned",
       workerRetention: "keep",
       workerWorkspace: "shared",
       childMessageDelivery: "queued",
@@ -3043,7 +3105,7 @@ describe("cli", () => {
   });
 
   it("pins the requested provider and model through CLI delegation", async () => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     const result = await harness.behavior.runCli([
       "delegate", "--task", "Probe the contract and scope",
@@ -3060,7 +3122,7 @@ describe("cli", () => {
   });
 
   it.each(["--provider-id", "--providerId"])("accepts the %s CLI alias", async (flag) => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     const result = await harness.behavior.runCli([
       "delegate", "--task", "Probe the scope", flag, "grok",
@@ -3071,7 +3133,7 @@ describe("cli", () => {
   });
 
   it("accepts matching provider aliases after trimming", async () => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     await harness.behavior.callAgentTool(DELEGATE_TOOL, {
       task: "Probe matching aliases", provider: " grok ", providerId: "grok",
@@ -3081,7 +3143,7 @@ describe("cli", () => {
   });
 
   it("refuses conflicting provider aliases without spawning", async () => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     await expect(harness.behavior.callAgentTool(DELEGATE_TOOL, {
       task: "Probe conflicting aliases", provider: "grok", providerId: "other",
@@ -3091,7 +3153,7 @@ describe("cli", () => {
   });
 
   it.each(["provider", "providerId"])("does not retarget an unknown %s to the model owner", async (field) => {
-    const { harness } = await load({}, undefined, PIN_CATALOG);
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, PIN_CATALOG);
     await enable(harness);
     await expect(harness.behavior.callAgentTool(DELEGATE_TOOL, {
       task: "Probe unknown pins", [field]: "other", model: "grok-test-model",
@@ -3101,7 +3163,7 @@ describe("cli", () => {
   });
 
   it.each(["provider", "providerId"])("refuses a model incompatible with the pinned %s", async (field) => {
-    const { harness } = await load({}, undefined, {
+    const { harness } = await load({ workerModelPolicy: "flexible" }, undefined, {
       providers: [...CATALOG.providers!, ...PIN_CATALOG.providers!],
       models: { ...CATALOG.models, ...PIN_CATALOG.models },
     });
