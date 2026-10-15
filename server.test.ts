@@ -234,9 +234,12 @@ async function load(
     await host.bb.storage.kv.set("settings", settings);
   }
   await plugin(host.bb);
-  // Loading reads the provider catalog once. No test asserts on that, and every
-  // call-count assertion below is about what a request or a turn does, so the
-  // load-time reads are dropped rather than counted as request activity.
+  // The real host starts services after registration; the official fake host
+  // drives them explicitly. Most tests exercise the ready steady state.
+  await host.harness.behavior.runService("worker-catalog").done;
+  await host.harness.behavior.runService("queue-recovery").done;
+  // Keep request call counts separate from startup reads. startup.test.ts
+  // covers unresolved, failed, and disposed discovery independently.
   host.harness.inspection.sdk.calls.length = 0;
   hosts.push(host.harness);
   return host;

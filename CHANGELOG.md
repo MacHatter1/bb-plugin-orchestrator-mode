@@ -6,6 +6,14 @@ All notable changes to Orchestrator Mode are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- Avoid the 30-second startup dependency loop by discovering worker models and
+  recovering queues after registration. Preserve saved worker choices until
+  discovery succeeds, retry failed reads, and cancel consumers on reload.
+
+## Unreleased
+
 ### Added
 
 - Queue direct child messages while an orchestrator turn is running, using

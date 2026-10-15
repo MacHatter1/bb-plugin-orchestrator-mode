@@ -475,31 +475,46 @@ function asScanRows(rows: unknown): ScanRow[] {
  * composer's provider and model pickers use, so a worker runs on something the
  * user can actually select there.
  *
- * A failed read is not fatal: the catalog comes back empty, the pickers offer
- * only "inherit", and nothing is validated against it.
+ * Discovery runs after registration because unfiltered requests wait for the
+ * provider-registration pass, which itself waits for all factories to return.
+ * Failed reads preserve saved choices and retry without blocking activation.
  */
-async function loadWorkerCatalog(bb: BbPluginApi): Promise<WorkerCatalog> {
-  try {
-    // The unfiltered response enumerates providers, including which are
-    // available; each provider's models need a call of its own. Providers are a
-    // handful, so this is a few requests once per plugin load.
-    const system = await bb.sdk.providers.models();
-    const providers: string[] = [];
-    const models: WorkerModelOption[] = [];
-    for (const provider of system.providers) {
-      if (!provider.available) continue;
-      providers.push(provider.id);
-      const listed = (await bb.sdk.providers.models({ providerId: provider.id })).models;
-      for (const model of listed) {
-        if (models.some((existing) => existing.id === model.id)) continue;
-        models.push({ id: model.id, providerId: provider.id });
-      }
+async function loadWorkerCatalog(bb: BbPluginApi, signal: AbortSignal): Promise<WorkerCatalog> {
+  // The unfiltered response enumerates available providers; their models each
+  // need a separate request. SDK failures may be returned as modelLoadError
+  // rather than thrown, and must not turn into an authoritative empty catalog.
+  signal.throwIfAborted();
+  const system = await whileActive(bb.sdk.providers.models(), signal);
+  if (system.modelLoadError) throw new Error(`Provider catalog: ${system.modelLoadError.code}`);
+  const providers: string[] = [];
+  const models: WorkerModelOption[] = [];
+  for (const provider of system.providers) {
+    if (!provider.available) continue;
+    providers.push(provider.id);
+    signal.throwIfAborted();
+    const response = await whileActive(bb.sdk.providers.models({ providerId: provider.id }), signal);
+    if (response.modelLoadError) throw new Error(`Provider ${provider.id}: ${response.modelLoadError.code}`);
+    for (const model of response.models) {
+      if (models.some((existing) => existing.id === model.id)) continue;
+      models.push({ id: model.id, providerId: provider.id });
     }
-    return { providers, models };
-  } catch (cause) {
-    bb.log.warn(`worker provider catalog unavailable, offering inherit only: ${String(cause)}`);
-    return { providers: [], models: [] };
   }
+  return { providers, models };
+}
+
+/** Stop consumers on service abort; observe late SDK results without using a
+ * disposed plugin context. */
+function whileActive<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => { cleanup(); reject(signal.reason); };
+    const cleanup = () => signal.removeEventListener("abort", aborted);
+    request.then(
+      (value) => { cleanup(); if (signal.aborted) reject(signal.reason); else resolve(value); },
+      (cause) => { cleanup(); reject(cause); },
+    );
+    if (signal.aborted) aborted();
+    else signal.addEventListener("abort", aborted, { once: true });
+  });
 }
 
 /**
@@ -524,7 +539,10 @@ function executionSources(exec: WorkerExecution): WorkerExecutionSources {
 }
 
 export default async function plugin(bb: BbPluginApi) {
-  const catalog = await loadWorkerCatalog(bb);
+  /** Stop in-flight consumers before the plugin context becomes stale. */
+  let disposed = false;
+  let catalog: WorkerCatalog = { providers: [], models: [] };
+  let catalogReady = false;
 
   /** The settings that shape thread behaviour, after a scope's values are validated. */
   interface SettingsView {
@@ -656,7 +674,7 @@ export default async function plugin(bb: BbPluginApi) {
     setting: string,
   ): string | undefined {
     if (value === undefined || value === "") return undefined;
-    if (options.length > 0 && !options.includes(value)) {
+    if (catalogReady && !options.includes(value)) {
       bb.log.warn(`${setting} "${value}" is not in the current catalog; ignoring it`);
       return undefined;
     }
@@ -757,9 +775,10 @@ export default async function plugin(bb: BbPluginApi) {
     }
     return {
       ...execution,
-      // A fallback that lost its provider or model to the catalog is no retry
-      // target at all: keep none rather than retry on half a choice.
-      ...(fallback?.providerId === undefined || fallback.model === undefined
+      // A model-only saved fallback may acquire its provider at discovery.
+      // Only discard incomplete targets once the catalog is authoritative.
+      ...(fallback === undefined || Object.keys(fallback).length === 0 ||
+        catalogReady && (fallback.providerId === undefined || fallback.model === undefined)
         ? {}
         : { fallback }),
       ...(Object.keys(presets).length === 0 ? {} : { presets }),
@@ -794,15 +813,15 @@ export default async function plugin(bb: BbPluginApi) {
   /**
    * Refuse a worker the provider catalog cannot serve, naming the alternatives
    * so the agent can correct itself instead of handing back a broken worker.
-   * Nothing is asserted while the catalog is empty, because an unreadable catalog must
-   * not make delegation impossible.
+   * Until discovery succeeds, preserve the existing fail-open behaviour. A
+   * successful empty catalog is authoritative too, and refuses explicit ids.
    */
   function assertInCatalog(exec: WorkerExecution): void {
     // The provider first: it is the outer choice, and naming a model that exists
     // under a provider that does not is a confusing way to report a typo.
     if (
       exec.providerId !== undefined &&
-      catalog.providers.length > 0 &&
+      catalogReady &&
       !catalog.providers.includes(exec.providerId)
     ) {
       throw new Error(
@@ -811,7 +830,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (
       exec.model !== undefined &&
-      catalog.models.length > 0 &&
+      catalogReady &&
       !catalog.models.some((option) => option.id === exec.model)
     ) {
       const sample = catalog.models
@@ -842,24 +861,19 @@ export default async function plugin(bb: BbPluginApi) {
     return enabled;
   }
 
-  /**
-   * Replace the stored worker configuration. `null` clears it, leaving every
-   * delegation on the project's remembered defaults. Each level must name both
-   * a provider and a model, since the settings section renders them with BB's
-   * picker, which resolves the pair against the live catalog, and every id it
-   * cannot serve is refused here rather than spawned.
-   */
-  async function setWorkerConfig(next: WorkerConfig | null): Promise<WorkerConfig> {
+  /** Global executions need a complete pair; project overrides and presets may
+   * inherit fields. Validate every configured id once discovery is available. */
+  function validateWorkerConfig(next: WorkerConfig | null, requirePair: boolean): void {
     if (next !== null) {
       const execution = executionOf(next);
       if (Object.keys(execution).length > 0) {
-        if (execution.providerId === undefined || execution.model === undefined) {
+        if (requirePair && (execution.providerId === undefined || execution.model === undefined)) {
           throw new Error("A worker execution needs both a provider and a model.");
         }
         assertInCatalog(execution);
       }
       if (next.fallback !== undefined) {
-        if (next.fallback.providerId === undefined || next.fallback.model === undefined) {
+        if (requirePair && (next.fallback.providerId === undefined || next.fallback.model === undefined)) {
           throw new Error("A worker execution needs both a provider and a model.");
         }
         assertInCatalog(next.fallback);
@@ -869,6 +883,10 @@ export default async function plugin(bb: BbPluginApi) {
         assertInCatalog(preset);
       }
     }
+  }
+
+  async function setWorkerConfig(next: WorkerConfig | null): Promise<WorkerConfig> {
+    validateWorkerConfig(next, true);
     const stored: WorkerConfig =
       next === null
         ? {}
@@ -887,9 +905,10 @@ export default async function plugin(bb: BbPluginApi) {
                 }),
           };
     await bb.storage.kv.set(WORKER_KEY, stored);
-    live.worker = stored;
+    // Discovery may have finished while this provisional write was in flight.
+    live.worker = storedWorkerConfig(stored);
     bb.realtime.publish(STATE_CHANGED, { at: Date.now() });
-    return stored;
+    return live.worker;
   }
 
   /**
@@ -981,6 +1000,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   /** Store one project's worker configuration. Null hands it back to the global value. */
   async function writeProjectWorker(projectId: string, next: WorkerConfig | null): Promise<WorkerConfig> {
+    validateWorkerConfig(next, false);
     if (next === null || Object.keys(next).length === 0) delete projectWorker[projectId];
     else
       projectWorker[projectId] = {
@@ -1771,6 +1791,7 @@ export default async function plugin(bb: BbPluginApi) {
       const countPerTurn = options.pluginInitiated !== true;
       await assertWithinBudget(orchestratorId, countPerTurn, targetProjectId);
       try {
+        assertInCatalog(exec);
         const spawned = await bb.sdk.threads.spawn({
           projectId: targetProjectId,
           environment,
@@ -2132,9 +2153,9 @@ export default async function plugin(bb: BbPluginApi) {
   // --- layer 2: the dispatch checkpoint ------------------------------------
 
   const childQueue = childMessageQueue(bb, async (threadId) => {
-    if ((await getState(threadId))?.enabled !== true) return false;
+    if (disposed || (await getState(threadId))?.enabled !== true || disposed) return false;
     const thread = await bb.sdk.threads.get({ threadId });
-    return (await getState(threadId))?.enabled === true &&
+    return !disposed && (await getState(threadId))?.enabled === true && !disposed &&
       settingsFor(thread.projectId).childMessageDelivery === "queued";
   });
 
@@ -2244,8 +2265,6 @@ export default async function plugin(bb: BbPluginApi) {
 
   const scanTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const scanning = new Set<string>();
-  /** Set on dispose so an in-flight scan stops touching `bb.sdk`. */
-  let disposed = false;
 
   function scheduleScan(threadId: string, delayMs = 750): void {
     if (disposed) return;
@@ -3385,14 +3404,59 @@ export default async function plugin(bb: BbPluginApi) {
     scanning.clear();
   });
 
-  // Recover durable plugin-held rows after a reload, even if no new child
-  // message arrives. BB remains the owner of their contents and claims.
-  try {
-    const waiting = await bb.sdk.threads.queue.list({ waitHolder: `plugin:${bb.pluginId}` });
-    await Promise.all([...new Set(waiting.map((entry) => entry.threadId))].map(childQueue.prepare));
-  } catch (cause) {
-    bb.log.warn(`child queue recovery failed: ${String(cause)}`);
-  }
+  bb.background.service("worker-catalog", {
+    async start(signal) {
+      while (!signal.aborted) {
+        try {
+          const discovered = await loadWorkerCatalog(bb, signal);
+          if (signal.aborted || disposed) return;
+          catalog = discovered;
+          catalogReady = true;
+          // Use the current mirrors, including edits made while discovery was
+          // pending. Do not rewrite saved choices merely because discovery ran.
+          live.worker = storedWorkerConfig(live.worker);
+          for (const [projectId, config] of Object.entries(projectWorker)) {
+            projectWorker[projectId] = storedWorkerConfig(config);
+          }
+          bb.realtime.publish(STATE_CHANGED, { at: Date.now() });
+          return;
+        } catch (cause) {
+          if (signal.aborted || disposed) return;
+          bb.log.warn(`worker provider catalog unavailable; preserving saved choices and retrying: ${String(cause)}`);
+        }
+        // Own the retry timer through the service's abort signal; discovery
+        // failure must neither fail activation nor leak a timer after reload.
+        let retryTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await whileActive(new Promise<void>((resolve) => {
+            retryTimer = setTimeout(resolve, 30_000);
+          }), signal);
+        } catch { return; }
+        finally { clearTimeout(retryTimer); }
+      }
+    },
+  });
 
+  bb.background.service("queue-recovery", {
+    async start(signal) {
+      // Abort precedes onDispose in the host lifecycle. Stop nested recovery
+      // consumers now, before any late SDK result can touch a stale context.
+      const stop = () => { disposed = true; childQueue.dispose(); };
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        if (signal.aborted || disposed) return;
+        try {
+          const waiting = await whileActive(bb.sdk.threads.queue.list({ waitHolder: `plugin:${bb.pluginId}` }), signal);
+          if (signal.aborted || disposed) return;
+          await whileActive(Promise.all([...new Set(waiting.map((entry) => entry.threadId))].map(childQueue.prepare)), signal);
+        } catch (cause) {
+          if (signal.aborted || disposed) return;
+          bb.log.warn(`child queue recovery failed: ${String(cause)}`);
+        }
+      } finally {
+        signal.removeEventListener("abort", stop);
+      }
+    },
+  });
   bb.log.info(`loaded (enforcement=${live.enforcement})`);
 }

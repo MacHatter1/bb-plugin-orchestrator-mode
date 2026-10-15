@@ -257,6 +257,14 @@ than spawning a worker whose start cannot succeed. Naming a provider that does
 not serve the chosen model resolves to the model's own provider, and the
 mismatch is logged.
 
+Provider discovery runs after plugin registration, so it cannot hold up BB's
+startup. Saved global and project worker choices remain available while the
+catalog loads or a read fails; failed reads retry every 30 seconds. Once a full
+catalog is available, effective worker, fallback and preset choices are
+validated and their model/provider pairs reconciled. Discovery does not rewrite
+the saved configuration. Pending queue batches also recover in the background
+after registration.
+
 `bb orchestrator-mode worker` prints the stored execution, sets it with
 `--provider`, `--model`, `--reasoning`, `--tier` and `--permission`, clears it
 with `--clear`, and manages the retry target with `--fallback-provider`,
