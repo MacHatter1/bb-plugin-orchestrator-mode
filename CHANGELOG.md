@@ -12,8 +12,6 @@ All notable changes to Orchestrator Mode are documented here. The format follows
   recovering queues after registration. Preserve saved worker choices until
   discovery succeeds, retry failed reads, and cancel consumers on reload.
 
-## Unreleased
-
 ### Added
 
 - Queue direct child messages while an orchestrator turn is running, using
