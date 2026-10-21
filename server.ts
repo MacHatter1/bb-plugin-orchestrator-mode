@@ -38,7 +38,13 @@ import {
   REVIEW_TOOL,
   REVIEW_VERDICTS,
   WORKER_MODEL_POLICIES,
+  WORKER_MODEL_POLICY_DESCRIPTIONS,
   WORKER_PRESETS,
+  WORKER_RETENTION,
+  WORKER_RETENTION_DESCRIPTIONS,
+  WORKER_WORKSPACE_DESCRIPTIONS,
+  WORKER_WORKSPACES,
+
   WORKER_SUBAGENT_POLICIES,
   WORKER_SUBAGENT_RULE,
   SERVICE_TIERS,
@@ -58,6 +64,8 @@ import {
   type PermissionMode,
   type ReasoningLevel,
   type ReviewVerdict,
+  type WorkerRetention,
+  type WorkerWorkspace,
   type ServiceTier,
   type Violation,
   type WorkerCatalog,
@@ -280,58 +288,6 @@ const stateSchema = z.object({
   /** Delegations whose result the orchestrator accepted, as a ratio's numerator. */
   reviewed: z.number(),
 });
-
-/**
- * What to do with a worker whose result the orchestrator has read. Archiving is
- * recoverable and only ever hides a worker from the sidebar, so it stays opt-in:
- * a default that tidied the sidebar would also hide the evidence.
- */
-export const WORKER_RETENTION = ["keep", "archive-checks", "archive-all"] as const;
-type WorkerRetention = (typeof WORKER_RETENTION)[number];
-
-/**
- * Where a delegation's workers run. `shared` reuses the checkout the orchestrator
- * itself is in, which is what an edit-then-review flow wants; `worktree` gives a
- * unit its own checkout so parallel workers cannot overwrite each other.
- */
-export const WORKER_WORKSPACES = ["shared", "worktree", "mixed"] as const;
-export type WorkerWorkspace = (typeof WORKER_WORKSPACES)[number];
-
-/**
- * One line per choice, for the settings row. Each opens with the choice's own
- * name, the convention the row relies on to emphasise it.
- */
-export const WORKER_WORKSPACE_DESCRIPTIONS: Record<WorkerWorkspace, string> = {
-  shared:
-    "Shared runs every worker in the orchestrator's own checkout, so two units that touch the same files can overwrite each other.",
-  worktree:
-    "Worktree gives each unit its own git worktree and branch. Nothing it writes lands in your checkout until you merge it, each worktree needs its dependencies installed by a committed .bb-env-setup.sh, and a check unit can only run tests once that has happened.",
-  mixed:
-    "Mixed makes it the orchestrator's call: every delegation names `workspace: \"shared\"` or `workspace: \"worktree\"`, and the contract tells it to give a worktree to a unit that would touch files another unit is touching. A shared unit's edits are visible to you at once; a worktree unit's stay on its branch until a merge unit brings them in.",
-};
-
-/**
- * One line per retention policy, so the settings row can explain every choice
- * rather than only the one in force. Archiving hides a thread from the sidebar;
- * it stays recoverable.
- */
-export const WORKER_RETENTION_DESCRIPTIONS: Record<WorkerRetention, string> = {
-  keep: "Keep leaves every worker in the sidebar.",
-  "archive-checks": "Archive-checks archives check units once their verdict has been read.",
-  "archive-all": "Archive-all archives every worker once the orchestrator has read its result.",
-};
-
-/**
- * One line per model policy, for the settings row. Pinned is the default: an
- * orchestrator that reaches for a stronger model than the scope wants is the
- * reason this setting exists.
- */
-export const WORKER_MODEL_POLICY_DESCRIPTIONS: Record<WorkerModelPolicy, string> = {
-  pinned:
-    "Pinned holds every worker on the execution below, or on a stored kind it names as a preset: a delegation that passes `model`, `provider` or `reasoning` is refused. Use it so no unit is upgraded or downgraded behind your back.",
-  flexible:
-    "Flexible lets a delegation set its own `model`, `provider` and `reasoning`, so the orchestrator can give a hard unit a stronger model. The contract tells it to.",
-};
 
 /** A project id, as the scope RPCs take it. */
 const projectIdSchema = z.object({ projectId: z.string().min(1).max(120) });

@@ -30,7 +30,7 @@ import {
   type PluginComposerScope,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import { WORKER_MODEL_POLICY_DESCRIPTIONS, WORKER_RETENTION, WORKER_RETENTION_DESCRIPTIONS, WORKER_WORKSPACE_DESCRIPTIONS, WORKER_WORKSPACES, type ContractDto, type OrchestratorStateDto, type ScopeSettingsDto, type SettingsViewDto, type rpcContract } from "./server";
+import type { ContractDto, OrchestratorStateDto, ScopeSettingsDto, SettingsViewDto, rpcContract } from "./server";
 import {
   CONTRACT_PRESET_DESCRIPTIONS,
   CONTRACT_PRESETS,
@@ -40,8 +40,13 @@ import {
   ORCHESTRATOR_SUBAGENT_POLICIES,
   ORCHESTRATOR_SUBAGENT_POLICY_DESCRIPTIONS,
   WORKER_MODEL_POLICIES,
+  WORKER_MODEL_POLICY_DESCRIPTIONS,
+  WORKER_RETENTION,
+  WORKER_RETENTION_DESCRIPTIONS,
   WORKER_SUBAGENT_POLICIES,
   WORKER_SUBAGENT_POLICY_DESCRIPTIONS,
+  WORKER_WORKSPACE_DESCRIPTIONS,
+  WORKER_WORKSPACES,
   type WorkerConfig,
   type WorkerExecution,
   type WorkerPresetName,
